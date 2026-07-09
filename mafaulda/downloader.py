@@ -34,7 +34,7 @@ class SecureResumableDownloader:
                  max_retries: int = 10,
                  retry_delay: float = 3.0,
                  chunk_size: int = 1024 * 1024,
-                 timeout: int = 10,
+                 timeout: int = 60,
                  replace: bool = False,
                  num_connections: int = 8):
         """
@@ -144,10 +144,28 @@ class SecureResumableDownloader:
             # Catch, isolate, and log network-level or socket failures
             print(f"❌ Network-level failure during attempt {attempt}: {e}")
             return False
+    
+    def _start_countdown(self, stop_event: threading.Event):
+        """
+        Prints an incremental waiting timer in a non-blocking background thread
+        to prevent the application from appearing frozen to the user.
+
+        Args:
+            stop_event (threading.Event): Threading flag used to safely terminate the timer loop.
+        """
+        elapsed = 0
+        while not stop_event.is_set():
+            time.sleep(1)
+            elapsed += 1
+            # Update the exact same line dynamically using carriage return (\r)
+            print(f"⏳ Waiting for server response... {elapsed}s passed", end="\r", flush=True)
+        # Clear the waiting string from the console screen once the connection completes
+        print(" " * 60, end="\r")
 
     def _get_metadata(self) -> Tuple[int, bool]:
         """
         Retrieves headers from the target URL via a lightweight HEAD request.
+        Launches a non-blocking background countdown timer to monitor network latency.
 
         Returns:
             Tuple[int, bool]: The total file size in bytes, and a boolean flag indicating
@@ -156,18 +174,34 @@ class SecureResumableDownloader:
         # Prepare a HEAD request to fetch metadata exclusively without pulling body content
         req_head = urllib.request.Request(self.url, method='HEAD')
         
-        # Open the connection using the custom SSL context and strict timeout limit
-        with urllib.request.urlopen(req_head, context=self.ssl_context, timeout=self.timeout) as response:
-            # Extract specific header fields
-            content_length = response.getheader('Content-Length')
-            accept_ranges = response.getheader('Accept-Ranges')
-            
-            # Safely parse the total file size
-            total_size = int(content_length) if content_length else 0
-            
-            # Determine range support capability for parallel chunking
-            supports_range = (accept_ranges == 'bytes') or (total_size > 0)
-            return total_size, supports_range
+        # Initialize the non-blocking background thread timer configurations
+        stop_timer = threading.Event()
+        timer_thread = threading.Thread(target=self._start_countdown, args=(stop_timer,))
+        timer_thread.daemon = True
+        timer_thread.start()
+        
+        try:
+            # Open the connection using the custom SSL context and strict timeout limit
+            with urllib.request.urlopen(req_head, context=self.ssl_context, timeout=self.timeout) as response:
+                # Extract specific header fields
+                content_length = response.getheader('Content-Length')
+                accept_ranges = response.getheader('Accept-Ranges')
+                
+                # Safely parse the total file size
+                total_size = int(content_length) if content_length else 0
+                
+                # Determine range support capability for parallel chunking
+                supports_range = (accept_ranges == 'bytes') or (total_size > 0)
+                
+                # Announce the detected pipeline capability mode before returning
+                download_mode = "Range/Parallel" if supports_range and total_size > 0 else "Sequential"
+                print(f"📡 Connection established. Detected Pipeline Mode: [{download_mode}]")
+                
+                return total_size, supports_range
+        finally:
+            # Safely terminate and clean up the background countdown thread under any circumstances
+            stop_timer.set()
+            timer_thread.join()
 
     def _download_sequential(self, total_size: int, attempt: int):
         """
