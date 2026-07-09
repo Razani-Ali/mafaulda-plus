@@ -27,7 +27,7 @@ Available Functions:
 import numpy as np
 from typing import Dict, Callable, List, Tuple, Union, Optional
 
-from .utilities import SecureResumableDownloader
+from .downloader import SecureResumableDownloader
 from .ingestion import MAFAULDAIngestor
 from .filtering import ParallelZarrFilterEngine
 from .dataset import MAFAULDARawLoader, PhysicalSlidingWindow, VirtualSlidingWindow
