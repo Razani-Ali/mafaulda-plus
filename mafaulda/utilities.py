@@ -160,13 +160,13 @@ def get_file_lock(file_path):
 def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=False, max_workers=8):
     """
     An enterprise-grade, multi-threaded, and high-performance dual-mode copy engine.
-    Optimized for massive parallel directory copies (Zarr files) and optimized buffered single file transfers.
+    Equipped with a thread-safe, unified tqdm progress bar for both directory trees and files.
 
     Args:
         src (str/Path): The source file or directory path.
         dst (str/Path): The destination file or directory path.
         max_retries (int, optional): Number of retry attempts on failure. Defaults to 7.
-        chunk_size (int, optional): Size of the read/write buffer in bytes. Upgraded to 128MB.
+        chunk_size (int, optional): Size of the read/write buffer in bytes (default 128MB).
         force_sync (bool, optional): If True, forces synchronous/blocking execution. Defaults to False.
         max_workers (int, optional): Maximum worker threads for parallel file copying. Defaults to 8.
         
@@ -174,19 +174,27 @@ def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=Fals
         threading.Thread: The thread handling the copy operation.
     """
     from concurrent.futures import ThreadPoolExecutor
-    file_specific_lock = get_file_lock(str(dst))
     
-    def _parallel_dir_copy(src_dir, dst_dir):
-        """Helper function to copy directory tree files concurrently across worker threads."""
+    file_specific_lock = get_file_lock(str(dst))
+    progress_lock = threading.Lock()  # Specialized lock to avoid progress bar race conditions
+
+    def _get_total_bytes(path: Path) -> int:
+        """Helper to calculate total transfer size for the progress metrics."""
+        if path.is_file():
+            return path.stat().st_size
+        return sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
+
+    def _parallel_dir_copy(src_dir, dst_dir, bar):
+        """Helper function to copy directory tree files concurrently with thread-safe tqdm updates."""
         src_path = Path(src_dir)
         dst_path = Path(dst_dir)
         
-        # Pre-create all directory layout trees synchronously to avoid race conditions
-        for dirpath, dirnames, _ in os.walk(src_path):
+        # Pre-create directory layout synchronously to eliminate race conditions
+        for dirpath, _, _ in os.walk(src_path):
             rel_dir = Path(dirpath).relative_to(src_path)
             (dst_path / rel_dir).mkdir(parents=True, exist_ok=True)
             
-        # Collect all physical files to distribute among worker threads
+        # Gather all physical files
         all_files = []
         for dirpath, _, filenames in os.walk(src_path):
             for f in filenames:
@@ -195,8 +203,16 @@ def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=Fals
         def _copy_single_file_worker(file_src_path):
             rel_file = file_src_path.relative_to(src_path)
             file_dst_path = dst_path / rel_file
-            # Fast binary file copy with OS metadata preservation
+            
+            # Fetch file size before transfer
+            f_size = file_src_path.stat().st_size
+            
+            # Copy file and preserve metadata
             shutil.copy2(file_src_path, file_dst_path)
+            
+            # Thread-safe update of the shared master progress bar
+            with progress_lock:
+                bar.update(f_size)
 
         # Dispatch independent binary chunks concurrently across the thread pool
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -204,41 +220,50 @@ def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=Fals
 
     def save_it(src_path, dst_path):
         with file_specific_lock:
+            p_src = Path(src_path)
+            p_dst = Path(dst_path)
+            
+            # Calculate total payload size to calibrate the tqdm bar accurately
+            total_bytes = _get_total_bytes(p_src)
+            desc_msg = "🗂️ Syncing Zarr DB" if p_src.is_dir() else "📄 Syncing File"
+
             for i in range(max_retries):
                 try:
-                    p_src = Path(src_path)
-                    p_dst = Path(dst_path)
-                    
-                    # 🗂️ BRANCH A: Parallel Multi-threaded Directory Copy (Zarr Supercharger)
-                    if p_src.is_dir():
-                        if p_dst.exists():
-                            shutil.rmtree(p_dst)
-                        _parallel_dir_copy(p_src, p_dst)
+                    # Initialize progress bar for this transaction attempt
+                    with tqdm(total=total_bytes, unit='B', unit_scale=True, 
+                              unit_divisor=1024, desc=desc_msg, leave=True) as bar:
                         
-                    # 📄 BRANCH B: Optimized Large-Buffer Standard File Copy
-                    else:
-                        p_dst.parent.mkdir(parents=True, exist_ok=True)
-                        temp_dst = p_dst.with_suffix('.tmp')
-                        
-                        with open(p_src, 'rb') as fsrc:
-                            with open(temp_dst, 'wb') as fdst:
-                                while True:
-                                    buf = fsrc.read(chunk_size)
-                                    if not buf:
-                                        break
-                                    fdst.write(buf)
+                        # 🗂️ BRANCH A: Parallel Multi-threaded Directory Copy (Zarr Mode)
+                        if p_src.is_dir():
+                            if p_dst.exists():
+                                shutil.rmtree(p_dst)
+                            _parallel_dir_copy(p_src, p_dst, bar)
+                            
+                        # 📄 BRANCH B: Optimized Large-Buffer Standard File Copy
+                        else:
+                            p_dst.parent.mkdir(parents=True, exist_ok=True)
+                            temp_dst = p_dst.with_suffix('.tmp')
+                            
+                            with open(p_src, 'rb') as fsrc:
+                                with open(temp_dst, 'wb') as fdst:
+                                    while True:
+                                        buf = fsrc.read(chunk_size)
+                                        if not buf:
+                                            break
+                                        fdst.write(buf)
+                                        bar.update(len(buf))
 
-                        shutil.copystat(src_path, temp_dst)
-                        replace_with_error(temp_dst, p_dst)
+                            shutil.copystat(src_path, temp_dst)
+                            replace_with_error(temp_dst, p_dst)
                     
                     break # Success break
                 
                 except Exception as e:
                     if i < max_retries - 1:
-                        print(f"🔄 [Retry {i+1}/{max_retries}] I/O operation interrupted. Retrying in 10s... ⏳")
+                        print(f"\n🔄 [Retry {i+1}/{max_retries}] I/O operation failed. Retrying in 10s... ⏳")
                         time.sleep(10)
                     else:
-                        print(f"❌ Failed to copy after {max_retries} attempts: {e}")
+                        print(f"\n❌ Failed to copy after {max_retries} attempts: {e}")
 
     thread = threading.Thread(target=save_it, args=(str(src), str(dst)))
     thread.daemon = True
