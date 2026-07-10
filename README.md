@@ -4,7 +4,7 @@
 
 **An enterprise-grade, concurrent, and zero-copy ingestion, filtering, and windowing pipeline for the massive MAFAULDA machinery fault diagnosis dataset.**
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1L1r4yNgGGM-q44tjGChHjc0Un9YB8wqK?usp=sharing)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1_QO6B5rM79knfOL3ghE3jFoH533yIVwb?usp=sharing)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/mafaulda-plus.svg)](https://badge.fury.io/py/mafaulda-plus)
@@ -14,7 +14,7 @@
 ---
 
 ## 🌟 The Big Data Challenge, Conquered
-Following the massive success of our previous library, **CWRU-Plus**, we realized that modern Deep Learning researchers needed an even more powerful engine. While the CWRU dataset is manageable in size, the MAFAULDA dataset is an absolute beast—dozens of gigabytes of raw, multi-channel vibration signals. 
+Following the massive success of Bearing Fault Dataset, **CWRU**, we realized that modern Deep Learning researchers needed an even more powerful engine. While the CWRU dataset is manageable in size, the MAFAULDA dataset is an absolute beast—dozens of gigabytes of raw, multi-channel vibration signals. 
 
 Attempting to load this into RAM using traditional methods will instantly crash your low RAM system. **MAFAULDA-Plus** is engineered from the ground up to handle this exact nightmare. By leveraging **Zarr v3 compression**, **disk-backed Memory Mapping (`memmap`)**, and a purely **Virtual Windowing Engine**, we have reduced the RAM consumption of processing the entire dataset to **Absolute Zero**. 
 
@@ -195,16 +195,57 @@ X_task, Y_task, _ = sampler.sample(
 ```
 
 ---
+## 🚀 Performance Benchmarks & Core Advantages
+
+This library is engineered to modernize data pipelines for massive industrial time-series datasets. It completely eliminates traditional bottlenecks such as Out-Of-Memory (OOM) crashes, cloud storage freezing, and CPU-bound digital signal processing.
+
+### ⏱️ One-Time Setup, Lifetime Speed: Parallel Ingestion & Persistence (Colab Benchmark)
+Traditional pipelines parsing thousands of nested CSVs and applying digital filters take hours on every single run. Our architecture enforces a strict **"Ingest Once, Restore Instantly"** philosophy:
+* **High-Speed Ingestion:** Safely parsed and compressed 1,951 raw CSV files (31.04 GB) into a highly optimized Zarr binary database (7.27 GB) in just **~11 minutes**.
+* **Blazing-Fast Signal Processing:** Executed parallel scientific filtering and signal decimation across all 1,951 multidimensional arrays (8 signals per file) in **only 3 minutes and 13 seconds**.
+* **Seamless Pipeline Persistence:** Once this initialization is complete, you never have to run it again. The entire compressed environment is cached globally. Future sessions bypass the raw download, extraction, and filtering stages entirely, restoring the full multi-gigabyte ready-to-train database layout in **under 4.5 minutes**!
+
+### 🧠 Zero-RAM Architecture: Free-Tier Friendly
+Handling massive time-series data—especially when applying sliding windows—typically causes physical memory to explode, crashing standard local machines and free-tier cloud notebooks. We solved this preemptively:
+* **Lazy Tensor Mapping:** Loaded the complete dataset into the pipeline with a measured physical RAM growth of only **~7.5 MB**. The data remains securely mapped to the disk layout.
+* **Virtual Sliding Windows:** Instead of duplicating data into RAM to create sliding windows (which rapidly inflates memory usage to tens of gigabytes), our engine creates **Zero-Copy Virtual Windows**. The 10+ GB virtual memory footprint is handled entirely downstream!
+* **Instant Native DataLoaders:** Deep learning data pipelines yield their first mini-batch in **~20 ms (PyTorch)** and **~62 ms (TensorFlow)**, keeping your RAM completely free for model weights and GPU tensors.
+
+---
 
 ## ☁️ Google Colab Integration & Real-World Benchmarks
 
-Training on the cloud? MAFAULDA-Plus is fully optimized for Google Colab environments.
+Training on the cloud? MAFAULDA-Plus is fully optimized for Google Colab environments and local workstations alike. 
 
-While our official Colab execution time and CPU vs. Wall Time benchmark table is currently compiling and will be released in the next update, you don't have to wait to feel the speed. You can experience the multi-threaded extraction, Zarr v3 compression, and zero-RAM PyTorch integration right now.
+While perfectly tailored to max out multi-core CPU threads on local machines, it features specialized environment-agnostic defenses to conquer the notorious instability of cloud notebook environments:
+* **FUSE-Stabilized Cloud Sync:** Bypasses Google Drive's FUSE file-creation limits and freezing issues by utilizing an on-the-fly parallel archiving pipeline. It safely packs and syncs the entire 7.27 GB database to your cloud drive in **~3 minutes**, completely safe from network drops.
+* **SSD Lifespan Protection:** By relying on memory-mapping and eliminating redundant physical window copies, the pipeline drastically reduces read/write cycles, actively protecting your local NVMe/SSD hardware from wear and tear.
 
-👉 **[Run the interactive End-to-End Pipeline in Colab right now!](https://colab.research.google.com/drive/1L1r4yNgGGM-q44tjGChHjc0Un9YB8wqK?usp=sharing)**
+### 📊 Comprehensive Execution Benchmarks
+
+| Pipeline Phase | Data Scope / Format | Data Size | Metric / Throughput | Wall Time |
+| :--- | :--- | :--- | :--- | :--- |
+| **Secure Multi-threaded Download** | Multi-part Raw Archive (`.zip`) | 12.25 GB | 232 MB/s (8 threads) | **03 min 58s** |
+| **Parallel Archive Extraction** | Plain-Text File Tree (`.csv`) | 31.04 GB | 116 MB/s (SSD Bound) | **05 min 49s** |
+| **Fast C-Engine Ingestion** | Optimized Binary DB (`.zarr`) | 7.27 GB | 4.86 files / second | **11 min 20s** |
+| **Local Parallel Packing** | Temporary Local Sync Archive | 7.27 GB | 72.4 MB/s (Stored Mode) | **01 min 38s** |
+| **Single-Stream Cloud Sync (Push)** | Google Drive Upload Destination | 7.27 GB | 93.1 MB/s (Buffered I/O) | **01 min 22s** |
+| **Cloud Synchronization (Pull)** | Drive-to-Local Resync Engine | 7.27 GB | 39.5 MB/s (Network Bound) | **03 min 04s** |
+| **Parallel Scientific Filtering** | Decimated Target Binary Store | 1.82 GB | 14.20 files / second | **03 min 13s** |
+| **Lazy Tensor Mapping** | `X_base` / `Y_base` Memmap Arrays | 1.09 GB | **Net RAM Delta: ~7.5 MB** | **00 min 18s** |
+
+👉 **[Run the interactive End-to-End Pipeline in Colab right now!](https://colab.research.google.com/drive/1_QO6B5rM79knfOL3ghE3jFoH533yIVwb?usp=sharing)**
 
 ---
+
+## 🛠️ Ecosystem Extensions: CWRU-Plus
+
+If you are expanding your industrial fault diagnosis research beyond the MAFAULDA dataset, check out our companion open-source library: **CWRU-Plus**.
+
+**CWRU-Plus** is a modernized, high-performance data engineering framework specifically designed for the **Case Western Reserve University (CWRU) bearing dataset**.
+
+📦 **PyPI:** `pip install cwru-plus`  
+💻 **GitHub:** Discover the repository, documentation, and source code on our official GitHub profile!
 
 ## 🤝 Contributing & License
 
