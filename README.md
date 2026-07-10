@@ -33,9 +33,9 @@ Forget writing complex I/O loops and chunking logic. We have abstracted the enti
 ```python
 import mafaulda
 
-# 1 & 2. Download and Extract the massive dataset safely
+# 1 & 2. Download and Extract the massive dataset safely via multi-threading
 mafaulda.download(target_path="data/MAFAULDA.zip")
-mafaulda.utilities.extract_zip(zip_path="data/MAFAULDA.zip", extract_to="data/MAFAULDA")
+mafaulda.utilities.extract_zip(zip_path="data/MAFAULDA.zip", extract_to="data/MAFAULDA", max_workers=8)
 
 # 3. Ingest raw CSVs into a highly compressed Zarr v3 database via multi-processing
 mafaulda.ingest(raw_data_dir="data/MAFAULDA", zarr_store_path="data/MAFAULDA.zarr")
@@ -44,7 +44,7 @@ mafaulda.ingest(raw_data_dir="data/MAFAULDA", zarr_store_path="data/MAFAULDA.zar
 X, Y, meta = mafaulda.load(zarr_path="data/MAFAULDA.zarr", target_classes=['normal', 'imbalance'], use_memmap=True)
 
 # 5. Spawn a Native PyTorch DataLoader using our Zero-Copy Virtual Windowing engine
-dataloader = mafaulda.get_pytorch_dataloader(X, Y, window_size=1024, step_size=512, class_to_idx={'normal':0, 'imbalance':1})
+dataloader = mafaulda.get_pytorch_dataloader(X, Y, window_size=2048, step_size=512, class_to_idx={'normal':0, 'imbalance':1})
 ```
 
 ---
@@ -123,16 +123,18 @@ Here is how you inject this scientific pipeline concurrently across all CPU core
 
 ```python
 import mafaulda
+# 🚀 Clean and explicit submodule import directly from the unified engine package
+from mafaulda.filter_config import TachometerProcessor, AccelerometerFilter
 
 # 🚀 Step 1: Initialize the advanced Tachometer Pulse Edge-Differentiator
-tacho_processor = mafaulda.TachometerProcessor(
+tacho_processor = TachometerProcessor(
     Fs=50000, 
     filter_cutoff=400.0,     # Clean high-frequency noise from pulse streams
     pulses_per_rev=1
 )
 
 # 🚀 Step 2: Initialize the causal IIR filter to eliminate the 23kHz sensor resonance
-accel_filter = mafaulda.AccelerometerFilter(
+accel_filter = AccelerometerFilter(
     fs=50000.0, 
     cutoff=6220.0,           # Safe cut-off well below the 23kHz parasitic resonance peak
     iir_kind="ellip", 
