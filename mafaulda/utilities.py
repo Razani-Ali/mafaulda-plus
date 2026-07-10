@@ -286,7 +286,7 @@ def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024,
             
             is_directory = p_src.is_dir()
             total_bytes = _get_total_bytes(p_src)
-            desc_msg = "🗂️ Syncing Directory Layout" if is_directory else "📄 Syncing Binary File"
+            desc_msg = "🗂️ Syncing Directory Layout" if is_directory else "📄 Syncing File"
 
             for i in range(max_retries):
                 try:
