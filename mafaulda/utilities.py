@@ -157,25 +157,51 @@ def get_file_lock(file_path):
         # Return the specific lock for this file
         return _locks[file_path]
 
-def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=False):
+def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=False, max_workers=8):
     """
-    Spawns a thread to copy a file OR a complete directory tree (like Zarr) safely.
-    If force_sync is enabled, it blocks the main thread (Colab cell) until data is fully written.
-    
+    An enterprise-grade, multi-threaded, and high-performance dual-mode copy engine.
+    Optimized for massive parallel directory copies (Zarr files) and optimized buffered single file transfers.
+
     Args:
         src (str/Path): The source file or directory path.
         dst (str/Path): The destination file or directory path.
         max_retries (int, optional): Number of retry attempts on failure. Defaults to 7.
-        chunk_size (int, optional): Size of the read/write buffer in bytes (default 50MB).
+        chunk_size (int, optional): Size of the read/write buffer in bytes. Upgraded to 128MB.
         force_sync (bool, optional): If True, forces synchronous/blocking execution. Defaults to False.
+        max_workers (int, optional): Maximum worker threads for parallel file copying. Defaults to 8.
         
     Returns:
         threading.Thread: The thread handling the copy operation.
     """
-    # Retrieve the thread lock dedicated to the destination file/folder layout
+    from concurrent.futures import ThreadPoolExecutor
     file_specific_lock = get_file_lock(str(dst))
     
-    # Define the internal function to be executed by the thread
+    def _parallel_dir_copy(src_dir, dst_dir):
+        """Helper function to copy directory tree files concurrently across worker threads."""
+        src_path = Path(src_dir)
+        dst_path = Path(dst_dir)
+        
+        # Pre-create all directory layout trees synchronously to avoid race conditions
+        for dirpath, dirnames, _ in os.walk(src_path):
+            rel_dir = Path(dirpath).relative_to(src_path)
+            (dst_path / rel_dir).mkdir(parents=True, exist_ok=True)
+            
+        # Collect all physical files to distribute among worker threads
+        all_files = []
+        for dirpath, _, filenames in os.walk(src_path):
+            for f in filenames:
+                all_files.append(Path(dirpath) / f)
+                
+        def _copy_single_file_worker(file_src_path):
+            rel_file = file_src_path.relative_to(src_path)
+            file_dst_path = dst_path / rel_file
+            # Fast binary file copy with OS metadata preservation
+            shutil.copy2(file_src_path, file_dst_path)
+
+        # Dispatch independent binary chunks concurrently across the thread pool
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            executor.map(_copy_single_file_worker, all_files)
+
     def save_it(src_path, dst_path):
         with file_specific_lock:
             for i in range(max_retries):
@@ -183,16 +209,13 @@ def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=False
                     p_src = Path(src_path)
                     p_dst = Path(dst_path)
                     
-                    # 🗂️ BRANCH A: If the source is a Directory (e.g., Zarr Database Store)
+                    # 🗂️ BRANCH A: Parallel Multi-threaded Directory Copy (Zarr Supercharger)
                     if p_src.is_dir():
                         if p_dst.exists():
-                            # Remove old destination tree cleanly before forcing rewrite
                             shutil.rmtree(p_dst)
+                        _parallel_dir_copy(p_src, p_dst)
                         
-                        # Copy the entire hierarchical directory grid at hardware speed
-                        shutil.copytree(src=p_src, dst=p_dst)
-                        
-                    # 📄 BRANCH B: If the source is a Standard File (e.g., MAFAULDA.zip)
+                    # 📄 BRANCH B: Optimized Large-Buffer Standard File Copy
                     else:
                         p_dst.parent.mkdir(parents=True, exist_ok=True)
                         temp_dst = p_dst.with_suffix('.tmp')
@@ -208,41 +231,29 @@ def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=False
                         shutil.copystat(src_path, temp_dst)
                         replace_with_error(temp_dst, p_dst)
                     
-                    # Break the retry loop upon successful execution of either branch
-                    break
+                    break # Success break
                 
                 except Exception as e:
                     if i < max_retries - 1:
-                        print(f"🔄 [Retry {i+1}/{max_retries}] Directory/File copy interrupted. Retrying in 20s... ⏳")
-                        time.sleep(20)
+                        print(f"🔄 [Retry {i+1}/{max_retries}] I/O operation interrupted. Retrying in 10s... ⏳")
+                        time.sleep(10)
                     else:
                         print(f"❌ Failed to copy after {max_retries} attempts: {e}")
 
-    # Instantiate a new thread targeting the dual-mode internal save_it function
-    thread = threading.Thread(
-        target=save_it, 
-        args=(str(src), str(dst))
-    )
-    
+    thread = threading.Thread(target=save_it, args=(str(src), str(dst)))
     thread.daemon = True
-    print(f"🚀 Thread spawned successfully! Initiating dual-mode I/O stream... 📡")
+    print(f"🚀 High-speed parallel Thread spawned! Concurrency scale: {max_workers} workers. 📡")
     thread.start()
     
-    # If force_sync is requested, lock the execution flow and wait until the thread completes
     if force_sync:
         print(f"🔒 [FORCE_SYNC ACTIVE] Locking Colab cell execution runtime... Please wait! 🛑")
-        print(f"📦 Transferring stream from physical path to destination storage... 🔄")
-        
         thread.join()
-        
-        # Force a deep hardware-level flush of Linux filesystem cache pages directly to Drive mount
         if hasattr(os, 'sync'):
             print(f"💾 Flushing OS cache buffers directly onto Google Drive grid... 🧼")
             os.sync()
-            
-        print(f"✨ [SUCCESS] Hardware cache synchronized! Drive storage pipeline closed. 🏁")
+        print(f"✨ [SUCCESS] Hardware cache synchronized! Fast pipeline closed. 🏁")
     else:
-        print(f"🛸 [ASYNC MODE] Cell released early. File copy running silently in background... 🎭")
+        print(f"🛸 [ASYNC MODE] Cell released early. High-speed file copy running in background... 🎭")
     
     return thread
 
