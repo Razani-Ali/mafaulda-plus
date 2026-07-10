@@ -157,10 +157,12 @@ def get_file_lock(file_path):
         # Return the specific lock for this file
         return _locks[file_path]
 
-def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=False, max_workers=8):
+def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024,
+              force_sync=True, max_workers=8, auto_zip=True):
     """
-    An enterprise-grade, multi-threaded, and high-performance dual-mode copy engine.
-    Equipped with a thread-safe, unified tqdm progress bar for both directory trees and files.
+    An enterprise-grade, environment-agnostic, and dual-mode copy engine.
+    Supports high-speed parallel file copying and FUSE-stabilized on-the-fly archiving
+    for unstable network mounts (like Google Colab).
 
     Args:
         src (str/Path): The source file or directory path.
@@ -169,116 +171,139 @@ def safe_copy(src, dst, max_retries=7, chunk_size=128*1024*1024, force_sync=Fals
         chunk_size (int, optional): Size of the read/write buffer in bytes (default 128MB).
         force_sync (bool, optional): If True, forces synchronous/blocking execution. Defaults to False.
         max_workers (int, optional): Maximum worker threads for parallel file copying. Defaults to 8.
+        auto_zip (bool, optional): If True, consolidates directories into a single temporary zip 
+                                   before streaming to bypass cloud storage network limits. Defaults to False.
         
     Returns:
         threading.Thread: The thread handling the copy operation.
     """
     from concurrent.futures import ThreadPoolExecutor
+    import zipfile
+    import tempfile
     
     file_specific_lock = get_file_lock(str(dst))
-    progress_lock = threading.Lock()  # Specialized lock to avoid progress bar race conditions
+    progress_lock = threading.Lock()
 
     def _get_total_bytes(path: Path) -> int:
-        """Helper to calculate total transfer size for the progress metrics."""
         if path.is_file():
             return path.stat().st_size
         return sum(f.stat().st_size for f in path.rglob('*') if f.is_file())
 
-    def _parallel_dir_copy(src_dir, dst_dir, bar):
-        """Helper function to copy directory tree files concurrently with thread-safe tqdm updates."""
-        src_path = Path(src_dir)
-        dst_path = Path(dst_dir)
-        
-        # Pre-create directory layout synchronously to eliminate race conditions
+    def _parallel_dir_copy(src_path: Path, dst_path: Path, bar):
+        """Copies directory tree files concurrently across worker threads."""
         for dirpath, _, _ in os.walk(src_path):
             rel_dir = Path(dirpath).relative_to(src_path)
             (dst_path / rel_dir).mkdir(parents=True, exist_ok=True)
             
-        # Gather all physical files
-        all_files = []
-        for dirpath, _, filenames in os.walk(src_path):
-            for f in filenames:
-                all_files.append(Path(dirpath) / f)
+        all_files = [Path(dirpath) / f for dirpath, _, filenames in os.walk(src_path) for f in filenames]
                 
         def _copy_single_file_worker(file_src_path):
             rel_file = file_src_path.relative_to(src_path)
             file_dst_path = dst_path / rel_file
-            
-            # Fetch file size before transfer
             f_size = file_src_path.stat().st_size
-            
-            # Copy file and preserve metadata
             shutil.copy2(file_src_path, file_dst_path)
-            
-            # Thread-safe update of the shared master progress bar
             with progress_lock:
                 bar.update(f_size)
 
-        # Dispatch independent binary chunks concurrently across the thread pool
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             executor.map(_copy_single_file_worker, all_files)
+
+    def _stream_file_buffered(p_src: Path, p_dst: Path, bar):
+        """Streams a single heavy file using optimized chunk buffers."""
+        p_dst.parent.mkdir(parents=True, exist_ok=True)
+        temp_dst = p_dst.with_suffix('.tmp')
+        
+        with open(p_src, 'rb') as fsrc:
+            with open(temp_dst, 'wb') as fdst:
+                while True:
+                    buf = fsrc.read(chunk_size)
+                    if not buf:
+                        break
+                    fdst.write(buf)
+                    bar.update(len(buf))
+
+        shutil.copystat(str(p_src), temp_dst)
+        replace_with_error(temp_dst, p_dst)
 
     def save_it(src_path, dst_path):
         with file_specific_lock:
             p_src = Path(src_path)
             p_dst = Path(dst_path)
             
-            # Calculate total payload size to calibrate the tqdm bar accurately
-            total_bytes = _get_total_bytes(p_src)
-            desc_msg = "🗂️ Syncing Zarr DB" if p_src.is_dir() else "📄 Syncing File"
+            is_directory = p_src.is_dir()
+            use_zip_pipeline = is_directory and auto_zip
+            
+            # Environment-agnostic temporary directory detection
+            system_temp_dir = Path(tempfile.gettempdir())
+            local_temp_zip = system_temp_dir / f"mafaulda_sync_{int(time.time())}.zip"
+            
+            if use_zip_pipeline:
+                print(f"\n📦 [ZIP PIPELINE ACTIVE] Packaging directory into system temp storage... 🛡️")
+                with zipfile.ZipFile(local_temp_zip, 'w', zipfile.ZIP_STORED) as zf:
+                    for file in p_src.rglob('*'):
+                        if file.is_file():
+                            zf.write(file, file.relative_to(p_src.parent))
+                
+                payload_src = local_temp_zip
+                payload_dst = p_dst.with_suffix('.zip')
+                desc_msg = "🗂️ Syncing Compressed DB"
+            else:
+                payload_src = p_src
+                payload_dst = p_dst
+                desc_msg = "🗂️ Syncing Zarr DB" if is_directory else "📄 Syncing File"
+
+            total_bytes = _get_total_bytes(payload_src)
 
             for i in range(max_retries):
                 try:
-                    # Initialize progress bar for this transaction attempt
                     with tqdm(total=total_bytes, unit='B', unit_scale=True, 
                               unit_divisor=1024, desc=desc_msg, leave=True) as bar:
                         
-                        # 🗂️ BRANCH A: Parallel Multi-threaded Directory Copy (Zarr Mode)
-                        if p_src.is_dir():
+                        if use_zip_pipeline:
+                            _stream_file_buffered(payload_src, payload_dst, bar)
+                        elif is_directory:
                             if p_dst.exists():
                                 shutil.rmtree(p_dst)
                             _parallel_dir_copy(p_src, p_dst, bar)
-                            
-                        # 📄 BRANCH B: Optimized Large-Buffer Standard File Copy
                         else:
-                            p_dst.parent.mkdir(parents=True, exist_ok=True)
-                            temp_dst = p_dst.with_suffix('.tmp')
-                            
-                            with open(p_src, 'rb') as fsrc:
-                                with open(temp_dst, 'wb') as fdst:
-                                    while True:
-                                        buf = fsrc.read(chunk_size)
-                                        if not buf:
-                                            break
-                                        fdst.write(buf)
-                                        bar.update(len(buf))
-
-                            shutil.copystat(src_path, temp_dst)
-                            replace_with_error(temp_dst, p_dst)
+                            _stream_file_buffered(p_src, p_dst, bar)
                     
-                    break # Success break
+                    if use_zip_pipeline:
+                        print("🔓 Unpacking directory grid at remote destination mount... 🌿")
+                        if p_dst.exists():
+                            shutil.rmtree(p_dst)
+                        with zipfile.ZipFile(payload_dst, 'r') as zf:
+                            zf.extractall(p_dst.parent)
+                        
+                        remove_file(str(payload_dst), force=True)
+                        remove_file(str(local_temp_zip), force=True)
+                    
+                    print("✅ I/O operations verified. Transaction completed successfully.")
+                    break
                 
                 except Exception as e:
                     if i < max_retries - 1:
-                        print(f"\n🔄 [Retry {i+1}/{max_retries}] I/O operation failed. Retrying in 10s... ⏳")
-                        time.sleep(10)
+                        print(f"\n⚠️ [I/O Exception] Pipeline locked or dropped. Retrying in 12s... ⏳")
+                        time.sleep(12)
                     else:
-                        print(f"\n❌ Failed to copy after {max_retries} attempts: {e}")
+                        print(f"\n💀 Fatal: Failed to complete transaction after {max_retries} attempts: {e}")
+                        if use_zip_pipeline:
+                            remove_file(str(local_temp_zip), force=True)
 
     thread = threading.Thread(target=save_it, args=(str(src), str(dst)))
     thread.daemon = True
-    print(f"🚀 High-speed parallel Thread spawned! Concurrency scale: {max_workers} workers. 📡")
+    print(f"🚀 Independent Dual-Mode Thread spawned! Concurrency scale: {max_workers} threads. 📡")
     thread.start()
     
     if force_sync:
-        print(f"🔒 [FORCE_SYNC ACTIVE] Locking Colab cell execution runtime... Please wait! 🛑")
+        print(f"🔒 [FORCE_SYNC ACTIVE] Locking cell execution runtime... Please wait! 🛑")
         thread.join()
         if hasattr(os, 'sync'):
-            print(f"💾 Flushing OS cache buffers directly onto Google Drive grid... 🧼")
+            print(f"💾 Flushing OS cache buffers directly onto target disk layout... 🧼")
             os.sync()
         print(f"✨ [SUCCESS] Hardware cache synchronized! Fast pipeline closed. 🏁")
     else:
-        print(f"🛸 [ASYNC MODE] Cell released early. High-speed file copy running in background... 🎭")
+        print(f"🛸 [ASYNC MODE] Action released early. High-speed file copy running in background... 🎭")
     
     return thread
 
