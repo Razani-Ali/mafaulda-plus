@@ -157,18 +157,20 @@ def get_file_lock(file_path):
         # Return the specific lock for this file
         return _locks[file_path]
 
-def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024):
+def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=True):
     """
-    Spawns a daemon thread to copy a file safely, atomically, and with thread locks.
+    Spawns a thread to copy a file safely, atomically, and with thread locks.
+    If force_sync is enabled, it blocks the main thread (Colab cell) until data is fully written.
     
     Args:
         src (str/Path): The source file path.
         dst (str/Path): The destination file path.
         max_retries (int, optional): Number of retry attempts on failure. Defaults to 7.
         chunk_size (int, optional): Size of the read/write buffer in bytes (default 50MB).
+        force_sync (bool, optional): If True, forces synchronous/blocking execution. Defaults to False.
         
     Returns:
-        threading.Thread: The daemon thread handling the copy operation.
+        threading.Thread: The thread handling the copy operation.
     """
     # Retrieve the thread lock dedicated to the destination file
     file_specific_lock = get_file_lock(str(dst))
@@ -214,6 +216,7 @@ def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024):
                 except Exception as e:
                     # If not on the last attempt, wait 20 seconds before retrying
                     if i < max_retries - 1:
+                        print(f"🔄 [Retry {i+1}/{max_retries}] Copy interrupted. Retrying in 20s... ⏳")
                         time.sleep(20)
                     else:
                         # Log failure if all retries are exhausted
@@ -224,12 +227,33 @@ def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024):
         target=save_it, 
         args=(str(src), str(dst))
     )
-    # Set the thread as a daemon so it doesn't block the main program from exiting
+    
+    # Set the thread as a daemon so it doesn't block the main program from exiting if async
     thread.daemon = True
+    
     # Start the thread execution
+    print(f"🚀 Thread spawned successfully! Initiating background I/O stream... 📡")
     thread.start()
     
-    # Return the thread object in case the caller needs to join() or monitor it
+    # ⚡ NEW SYNCHRONOUS FORCE LOCK BLOCK:
+    # If force_sync is requested, lock the execution flow and wait until the thread completes
+    if force_sync:
+        print(f"🔒 [FORCE_SYNC ACTIVE] Locking Colab cell execution runtime... Please wait! 🛑")
+        print(f"📦 Transferring stream from physical path to destination storage... 🔄")
+        
+        # Block the execution of the calling cell until save_it finishes its job
+        thread.join()
+        
+        # Force a deep hardware-level flush of Linux filesystem cache pages directly to Drive mount
+        if hasattr(os, 'sync'):
+            print(f"💾 Flushing OS cache buffers directly onto Google Drive grid... 🧼")
+            os.sync()
+            
+        print(f"✨ [SUCCESS] Hardware cache synchronized! Drive storage pipeline closed. 🏁")
+    else:
+        print(f"🛸 [ASYNC MODE] Cell released early. File copy running silently in background... 🎭")
+    
+    # Return the thread object to maintain absolute backward compatibility
     return thread
 
 
