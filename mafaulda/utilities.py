@@ -106,32 +106,32 @@ def remove_folder(folder_path: Union[str, os.PathLike], force: bool = False) -> 
             than a directory layout container.
     """
     try:
-        # Check if the target pathway physically exists on the filesystem disk[cite: 2]
+        # Check if the target pathway physically exists on the filesystem disk
         if not os.path.exists(folder_path):
-            # If the path is missing but the force flag is active, bypass execution with success[cite: 2]
+            # If the path is missing but the force flag is active, bypass execution with success
             if force:
                 return True
-            # Raise an explicit exception if the folder is absent and force is deactivated[cite: 2]
+            # Raise an explicit exception if the folder is absent and force is deactivated
             raise FileNotFoundError(f"❌ could not find folder '{folder_path}'")
         
-        # Verify that the existing node represents a structural directory, not a generic file link[cite: 2]
+        # Verify that the existing node represents a structural directory, not a generic file link
         if not os.path.isdir(folder_path):
-            # Abort operation with a explicit type exception if a file collision occurs[cite: 2]
+            # Abort operation with a explicit type exception if a file collision occurs
             raise NotADirectoryError(f"🚫 directory '{folder_path}' is not a folder")
         
-        # Concurrently clean and recursively purge the entire directory hierarchy layout tree[cite: 2]
+        # Concurrently clean and recursively purge the entire directory hierarchy layout tree
         shutil.rmtree(folder_path)
-        # Return success confirmation after directory tree is wiped[cite: 2]
+        # Return success confirmation after directory tree is wiped
         return True
     
     except PermissionError as e:
-        # Intercept, catch, and log access blockages or administrative filesystem privileges[cite: 2]
+        # Intercept, catch, and log access blockages or administrative filesystem privileges
         print(f"🔒 permission denied, error: {e}")
     except Exception as e:
-        # Catch, log, and isolate unknown system exceptions to protect application lifecycle[cite: 2]
+        # Catch, log, and isolate unknown system exceptions to protect application lifecycle
         print(f"⚠️ unknown error: {e}")
         
-    # Return failure if any operational exception blockages interrupt execution flow[cite: 2]
+    # Return failure if any operational exception blockages interrupt execution flow
     return False
 
 """
