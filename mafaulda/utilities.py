@@ -157,14 +157,14 @@ def get_file_lock(file_path):
         # Return the specific lock for this file
         return _locks[file_path]
 
-def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=True):
+def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=False):
     """
-    Spawns a thread to copy a file safely, atomically, and with thread locks.
+    Spawns a thread to copy a file OR a complete directory tree (like Zarr) safely.
     If force_sync is enabled, it blocks the main thread (Colab cell) until data is fully written.
     
     Args:
-        src (str/Path): The source file path.
-        dst (str/Path): The destination file path.
+        src (str/Path): The source file or directory path.
+        dst (str/Path): The destination file or directory path.
         max_retries (int, optional): Number of retry attempts on failure. Defaults to 7.
         chunk_size (int, optional): Size of the read/write buffer in bytes (default 50MB).
         force_sync (bool, optional): If True, forces synchronous/blocking execution. Defaults to False.
@@ -172,76 +172,67 @@ def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=True)
     Returns:
         threading.Thread: The thread handling the copy operation.
     """
-    # Retrieve the thread lock dedicated to the destination file
+    # Retrieve the thread lock dedicated to the destination file/folder layout
     file_specific_lock = get_file_lock(str(dst))
     
     # Define the internal function to be executed by the thread
     def save_it(src_path, dst_path):
-        # Acquire the file-specific lock to ensure only one thread modifies this destination
         with file_specific_lock:
-            # Initiate the retry loop
             for i in range(max_retries):
                 try:
-                    # Convert paths to pathlib objects
                     p_src = Path(src_path)
                     p_dst = Path(dst_path)
                     
-                    # Ensure the destination directory exists
-                    p_dst.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Create a temporary destination path to prevent file corruption
-                    temp_dst = p_dst.with_suffix('.tmp')
-                    
-                    # Open source for reading and temp file for writing (both in binary mode)
-                    with open(p_src, 'rb') as fsrc:
-                        with open(temp_dst, 'wb') as fdst:
-                            while True:
-                                # Read data in chunks
-                                buf = fsrc.read(chunk_size)
-                                # Break the loop if the end of the file is reached
-                                if not buf:
-                                    break
-                                # Write the chunk to the temporary file
-                                fdst.write(buf)
+                    # 🗂️ BRANCH A: If the source is a Directory (e.g., Zarr Database Store)
+                    if p_src.is_dir():
+                        if p_dst.exists():
+                            # Remove old destination tree cleanly before forcing rewrite
+                            shutil.rmtree(p_dst)
+                        
+                        # Copy the entire hierarchical directory grid at hardware speed
+                        shutil.copytree(src=p_src, dst=p_dst)
+                        
+                    # 📄 BRANCH B: If the source is a Standard File (e.g., MAFAULDA.zip)
+                    else:
+                        p_dst.parent.mkdir(parents=True, exist_ok=True)
+                        temp_dst = p_dst.with_suffix('.tmp')
+                        
+                        with open(p_src, 'rb') as fsrc:
+                            with open(temp_dst, 'wb') as fdst:
+                                while True:
+                                    buf = fsrc.read(chunk_size)
+                                    if not buf:
+                                        break
+                                    fdst.write(buf)
 
-                    # Preserve the original file metadata (permissions, timestamps, etc.)
-                    shutil.copystat(src_path, temp_dst)
+                        shutil.copystat(src_path, temp_dst)
+                        replace_with_error(temp_dst, p_dst)
                     
-                    # Atomically replace the temp file with the final destination
-                    replace_with_error(temp_dst, p_dst)
-                    
-                    # Break the retry loop upon success
+                    # Break the retry loop upon successful execution of either branch
                     break
                 
                 except Exception as e:
-                    # If not on the last attempt, wait 20 seconds before retrying
                     if i < max_retries - 1:
-                        print(f"🔄 [Retry {i+1}/{max_retries}] Copy interrupted. Retrying in 20s... ⏳")
+                        print(f"🔄 [Retry {i+1}/{max_retries}] Directory/File copy interrupted. Retrying in 20s... ⏳")
                         time.sleep(20)
                     else:
-                        # Log failure if all retries are exhausted
                         print(f"❌ Failed to copy after {max_retries} attempts: {e}")
 
-    # Instantiate a new thread targeting the internal save_it function
+    # Instantiate a new thread targeting the dual-mode internal save_it function
     thread = threading.Thread(
         target=save_it, 
         args=(str(src), str(dst))
     )
     
-    # Set the thread as a daemon so it doesn't block the main program from exiting if async
     thread.daemon = True
-    
-    # Start the thread execution
-    print(f"🚀 Thread spawned successfully! Initiating background I/O stream... 📡")
+    print(f"🚀 Thread spawned successfully! Initiating dual-mode I/O stream... 📡")
     thread.start()
     
-    # ⚡ NEW SYNCHRONOUS FORCE LOCK BLOCK:
     # If force_sync is requested, lock the execution flow and wait until the thread completes
     if force_sync:
         print(f"🔒 [FORCE_SYNC ACTIVE] Locking Colab cell execution runtime... Please wait! 🛑")
         print(f"📦 Transferring stream from physical path to destination storage... 🔄")
         
-        # Block the execution of the calling cell until save_it finishes its job
         thread.join()
         
         # Force a deep hardware-level flush of Linux filesystem cache pages directly to Drive mount
@@ -253,7 +244,6 @@ def safe_copy(src, dst, max_retries=7, chunk_size=50*1024*1024, force_sync=True)
     else:
         print(f"🛸 [ASYNC MODE] Cell released early. File copy running silently in background... 🎭")
     
-    # Return the thread object to maintain absolute backward compatibility
     return thread
 
 
