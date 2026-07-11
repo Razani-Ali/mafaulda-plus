@@ -33,6 +33,8 @@ Forget writing complex I/O loops and chunking logic. We have abstracted the enti
 ```python
 import mafaulda
 
+# 💡 NOTE: If you already have the dataset downloaded or extracted locally, 
+# you can safely skip Step 1 and/or Step 2 to bypass redundant I/O operations.
 # 1 & 2. Download and Extract the massive dataset safely via multi-threading
 mafaulda.download(target_path="data/MAFAULDA.zip")
 mafaulda.utilities.extract_zip(zip_path="data/MAFAULDA.zip", extract_to="data/MAFAULDA", max_workers=8)
