@@ -171,44 +171,45 @@ class FewShotSampler:
         """Extracts random sliding window slices and metadata for a single target category.
 
         Args:
-            num_label (int): Numeric target class ID.
-            required_samples (int): Number of shots to extract.
+            num_label (int): The numeric target class ID mapped to a string category.
+            required_samples (int): Total number of shots (samples) to extract for this class.
 
         Returns:
             Tuple[list, list, list, list]: Lists containing (sampled_signals, labels, severities, rpms).
         """
+        # Initialize isolated lists to collect coordinates and corresponding signals
         sampled_x, sampled_y, sampled_sev, sampled_rpm = [], [], [], []
         
-        # Fetch underlying string name and map associated files for the class
+        # Retrieve the assigned string name and locate its filtered files
         string_name = self.numeric_to_string[num_label]
         available_files = self.file_indices_by_class[string_name]
         
-        # Sample non-overlapping flat indices randomly without replacement
+        # Randomly draw linear flat indexes from the calculated capacity of this class
         chosen_flat_indices = random.sample(range(self.label_frequencies[string_name]), required_samples)
 
-        # Process each sampled index and extract zero-copy data slices
+        # Iterate through each chosen index to resolve coordinates and slice signals
         for flat_idx in chosen_flat_indices:
-            # Map flat index to explicit physical dimensions
+            # Map flat index to 3-D physical coordinates (fold, physical file index, window index)
             fold, actual_file, win_idx = self._translate_flat_to_coordinates(flat_idx, available_files)
             
-            # Retrieve segment slices safely according to input dimensional shape
+            # Retrieve segment slices safely based on input tensor dimensionality
             if self.X.ndim == 5:
-                # Direct indexing for pre-windowed 5D layouts: [Folds, Files, Channels, Windows, Length]
+                # Direct indexing for pre-windowed 5-D layouts: [Folds, Files, Channels, Windows, Length]
                 x_slice = self.X[fold, actual_file, :, win_idx, :]
             else:
-                # Dynamic sliding window slicing for standard 4D tensors
+                # Dynamic sliding window slicing for standard 4-D tensors
                 start_pos = win_idx * self.step_size
                 end_pos = start_pos + self.window_size
                 x_slice = self.X[fold, actual_file, :, start_pos:end_pos]
                 
+            # Append signal slice and numeric target label
             sampled_x.append(x_slice)
             sampled_y.append(num_label)
             
-            # Map and extract aligned physics metadata trackers using the true file index
-            if self.Severity is not None:
-                sampled_sev.append(self.Severity[actual_file])
-            if self.RPM is not None:
-                sampled_rpm.append(self.RPM[actual_file])
+            # 🚀 FIX: Map and extract metadata safely using 'actual_file'
+            # If metadata arrays are absent (None), append None to maintain equal list lengths
+            sampled_sev.append(self.Severity[actual_file] if self.Severity is not None else None)
+            sampled_rpm.append(self.RPM[actual_file] if self.RPM is not None else None)
 
         return sampled_x, sampled_y, sampled_sev, sampled_rpm
 
@@ -222,17 +223,19 @@ class FewShotSampler:
             s_rpm (list): List of RPM speeds.
 
         Returns:
-            Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]: Standard production tensors.
+            Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]: Contiguous shuffled tensors.
         """
-        # Pack elements into a single list of tuples to maintain alignment during shuffling
+        # 🚀 FIX: Zipping with guaranteed equal length lists (none of the lists are empty anymore)
         combined = list(zip(s_x, s_y, s_sev, s_rpm))
+        
+        # Shuffle the tuple elements in-place to mix classes across the batch
         random.shuffle(combined)
 
-        # Reconstruct into optimized contiguous NumPy arrays
+        # Reconstruct elements back into clean, contiguous NumPy arrays
         X_final = np.array([item[0] for item in combined])
         Y_final = np.array([item[1] for item in combined], dtype=np.int64)
         
-        # Safely convert tracking arrays only if they were initialized in the database
+        # Safely convert tracking arrays to NumPy only if metadata was originally provided (not None)
         Sev_final = np.array([item[2] for item in combined], dtype=object) if self.Severity is not None else None
         RPM_final = np.array([item[3] for item in combined], dtype=np.float32) if self.RPM is not None else None
         

@@ -33,15 +33,15 @@ class PyTorchMafauldaDataset:
                 
             def __getitem__(self, idx):
                 # Retrieve the standard output from the central core engine
-                x_np, y_str, (sev_str, rpm_val) = self.parent.vw.get_window(idx)
+                x_np, y_str, _ = self.parent.vw.get_window(idx)
                 
                 # Convert the NumPy arrays/values into native PyTorch tensors
                 x_tensor = self.parent.torch.tensor(x_np, dtype=self.parent.torch.float32)
                 y_tensor = self.parent.torch.tensor(self.parent.class_to_idx[y_str], dtype=self.parent.torch.long)
-                rpm_tensor = self.parent.torch.tensor(rpm_val, dtype=self.parent.torch.float32)
-                
+                # Convert to tensor ONLY if the value is not None, otherwise preserve None
+
                 # Return the exact requested nested format to the DataLoader
-                return x_tensor, y_tensor, (sev_str, rpm_tensor)
+                return x_tensor, y_tensor
                 
         self.dataset = _InnerDataset(self)
 
@@ -65,9 +65,9 @@ class TFMafauldaGenerator:
     def _generator(self):
         """Internal generator yielding individual window instances."""
         for i in range(self.vw.total_windows):
-            x_np, y_str, (sev_str, rpm_val) = self.vw.get_window(i)
+            x_np, y_str, _ = self.vw.get_window(i)
             # Yield the structured format aligning identically with the core output
-            yield x_np, self.class_to_idx[y_str], (sev_str, rpm_val)
+            yield x_np, self.class_to_idx[y_str]
 
     def get_dataset(self, batch_size: int = 32):
         """
