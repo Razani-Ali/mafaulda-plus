@@ -166,7 +166,6 @@ def load(
 
 
 def stratified_file_split(
-    X: np.ndarray, 
     y: np.ndarray, 
     train_ratio: float = 0.75, 
     val_ratio: float = 0.25, 
