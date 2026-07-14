@@ -30,7 +30,7 @@ from typing import Dict, Callable, List, Tuple, Union, Optional
 from .downloader import SecureResumableDownloader
 from .ingestion import MAFAULDAIngestor
 from .filtering import ParallelZarrFilterEngine
-from .dataset import MAFAULDARawLoader, PhysicalSlidingWindow, VirtualSlidingWindow
+from .dataset import MAFAULDARawLoader, PhysicalSlidingWindow, VirtualSlidingWindow, generate_stratified_file_split
 from .dataset_frameworks import PyTorchMafauldaDataset, TFMafauldaGenerator
 from .fewshot_sampler import FewShotSampler
 
@@ -165,12 +165,49 @@ def load(
     return loader.load()
 
 
+def stratified_file_split(
+    X: np.ndarray, 
+    y: np.ndarray, 
+    train_ratio: float = 0.75, 
+    val_ratio: float = 0.25, 
+    random_seed: int = 42
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """
+    A high-level wrapper that automates leakage-free, stratified data splitting 
+    and returns ready-to-use NumPy arrays via Fancy Indexing.
+
+    This function wraps `generate_stratified_file_split` to simplify the user pipeline.
+    It splits the dataset in a single call while ensuring that:
+    1. No physical file spans across different splits (Zero Data Leakage).
+    2. The target class distribution remains identical in Train, Val, and Test sets.
+
+    Args:
+        y (np.ndarray): The 1D target array containing class labels, shape [N].
+        train_ratio (float): Percentage of physical files allocated to Training (default: 0.8).
+        val_ratio (float): Percentage of physical files allocated to Validation (default: 0.1).
+        random_seed (int): Control seed for shuffling reproducibility (default: 42).
+
+    Returns:
+        Tuple[np.array, np.array, np.array]: A nested tuple containing following components:
+            1. Indices Splits: train_idx, val_idx, test_idx containing the raw NumPy index arrays.
+    """
+    # 1. Calling the core stratified file-based index generator
+    train_idx, val_idx, test_idx = generate_stratified_file_split(
+        y=y,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        random_seed=random_seed
+    )
+    
+    return train_idx, val_idx, test_idx
+
 def SlidingWindow(
     X_base: np.ndarray,
     Y_base: np.ndarray,
     window_size: int = 2048,
     step_size: int = 512,
     valid_folds: Optional[List[int]] = None,
+    valid_files: Optional[List[int]] = None,
     meta_base: Tuple[np.ndarray, np.ndarray] = (None, None),
 ) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
@@ -183,6 +220,7 @@ def SlidingWindow(
         window_size (int): Segment sequence length per frame (e.g., 1024).
         step_size (int): Overlap shift increment controlling window stepping density (e.g., 512).
         valid_folds (List[int], optional): Subset lists restricting extraction scopes.
+        valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
         meta_base (Tuple[np.ndarray, np.ndarray]): Embedded nested metadata tuple (Severity, RPM).
 
     Returns:
@@ -192,7 +230,7 @@ def SlidingWindow(
             - Meta_phys: Replicated metadata containing (Severity, RPM) matching the slice indices.
     """
     pw = PhysicalSlidingWindow(
-        X_base=X_base, Y_base=Y_base, meta_base=meta_base,
+        X_base=X_base, Y_base=Y_base, meta_base=meta_base, valid_files=valid_files,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds
     )
     return pw.extract()
@@ -204,6 +242,7 @@ def VirtualWindowing(
     window_size: int = 2048,
     step_size: int = 512,
     valid_folds: Optional[List[int]] = None,
+    valid_files: Optional[List[int]] = None,
     meta_base: Tuple[np.ndarray, np.ndarray] = (None, None),
 ) -> VirtualSlidingWindow:
     """
@@ -216,6 +255,7 @@ def VirtualWindowing(
         window_size (int): Segment sequence length per frame (e.g., 1024).
         step_size (int): Overlap shift increment controlling window stepping density (e.g., 512).
         valid_folds (List[int], optional): Subset lists restricting extraction scopes.
+        valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
         meta_base (Tuple[np.ndarray, np.ndarray]): Embedded nested metadata tuple (Severity, RPM).
 
     Returns:
@@ -227,7 +267,7 @@ def VirtualWindowing(
         >>> x_win, y_label, (sev, rpm) = vw.get_window(1000)
     """
     return VirtualSlidingWindow(
-        X_base=X_base, Y_base=Y_base, meta_base=meta_base,
+        X_base=X_base, Y_base=Y_base, meta_base=meta_base, valid_files=valid_files,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds
     )
 
@@ -239,6 +279,7 @@ def sample_few_shot_tasks(
     window_size: int,
     step_size: int,
     valid_folds: Optional[List[int]] = None,
+    valid_files: Optional[List[int]] = None,
     meta_base: Optional[Tuple[np.ndarray, np.ndarray]] = (None, None),
     seed: Optional[int] = None
 ) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
@@ -254,6 +295,7 @@ def sample_few_shot_tasks(
         window_size (int): Segment window size.
         step_size (int): Overlap step increment.
         valid_folds (List[int], optional): Specific folds allocated for task extraction.
+        valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
         meta_base (Tuple[np.ndarray, np.ndarray]): Bound master metadata tracking metrics.
         seed (int, optional): Pseudo-random generator state value ensuring full task reproducibility.
 
@@ -266,7 +308,7 @@ def sample_few_shot_tasks(
     sampler = FewShotSampler(
         X_base=X_base, Y_base=Y_base, numeric_to_string=numeric_to_string,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds,
-        meta_base=meta_base
+        meta_base=meta_base, valid_files=valid_files,
     )
     if seed is not None:
         sampler.reset_seed(seed)
@@ -282,6 +324,7 @@ def get_pytorch_dataloader(
     batch_size: int = 32,
     shuffle: bool = True,
     valid_folds: Optional[List[int]] = None,
+    valid_files: Optional[List[int]] = None,
     meta_base: Tuple[np.ndarray, np.ndarray] = (None, None),
     **dataloader_kwargs
 ):
@@ -298,6 +341,7 @@ def get_pytorch_dataloader(
         batch_size (int): Minibatch density streamed on each iterative step.
         shuffle (bool): Randomizes batch sequence orderings if True.
         valid_folds (List[int], optional): Targeted cross-validation subset regions.
+        valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
         meta_base (Tuple[np.ndarray, np.ndarray]): Master metadata tuple (Severity, RPM).
         **dataloader_kwargs: Arbitrary keyword options fed directly to torch.utils.data.DataLoader.
 
@@ -306,7 +350,7 @@ def get_pytorch_dataloader(
     """
     from torch.utils.data import DataLoader
     vw = VirtualSlidingWindow(
-        X_base=X_base, Y_base=Y_base, meta_base=meta_base,
+        X_base=X_base, Y_base=Y_base, meta_base=meta_base, valid_files=valid_files,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds
     )
     wrapper = PyTorchMafauldaDataset(virtual_window=vw, class_to_idx=class_to_idx)
@@ -321,6 +365,7 @@ def get_tensorflow_dataset(
     class_to_idx: Dict[str, int],
     batch_size: int = 32,
     valid_folds: Optional[List[int]] = None,
+    valid_files: Optional[List[int]] = None,
     meta_base: Tuple[np.ndarray, np.ndarray] = (None, None),
 ):
     """
@@ -335,13 +380,14 @@ def get_tensorflow_dataset(
         class_to_idx (Dict[str, int]): Code map dictionary pointing category strings to integer ids.
         batch_size (int): Number of arrays packaged inside each parallel streaming batch.
         valid_folds (List[int], optional): Restrict evaluation or sampling to selected cross-validation spaces.
+        valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
         meta_base (Tuple[np.ndarray, np.ndarray]): Master metadata tracking properties.
 
     Returns:
         tf.data.Dataset: A high-throughput pre-batched and pre-fetched tensorflow stream instance.
     """
     vw = VirtualSlidingWindow(
-        X_base=X_base, Y_base=Y_base, meta_base=meta_base,
+        X_base=X_base, Y_base=Y_base, meta_base=meta_base, valid_files=valid_files,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds
     )
     wrapper = TFMafauldaGenerator(virtual_window=vw, class_to_idx=class_to_idx)

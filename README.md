@@ -249,7 +249,7 @@ If you are expanding your industrial fault diagnosis research beyond the MAFAULD
 **CWRU-Plus** is a modernized, high-performance data engineering framework specifically designed for the **Case Western Reserve University (CWRU) bearing dataset**.
 
 📦 **PyPI:** `pip install cwru-plus`  
-💻 **GitHub:** Discover the repository, documentation, and source code on our official GitHub profile!
+* 🌐 **GitHub Repository:** [Discover CWRU-Plus on GitHub](https://github.com/Razani-Ali/cwru-plus)
 
 ## 🤝 Contributing & License
 

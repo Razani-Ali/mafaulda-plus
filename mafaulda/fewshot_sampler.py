@@ -15,6 +15,7 @@ class FewShotSampler:
                  numeric_to_string: Dict[int, str],
                  window_size: int = 2048, step_size: int = 512,
                  valid_folds: Optional[List[int]] = None, 
+                 valid_files: Optional[List[int]] = None,
                  meta_base: Optional[Tuple[np.ndarray, np.ndarray]] = (None, None)):
         """
         Initializes the Few-Shot Sampler.
@@ -27,6 +28,7 @@ class FewShotSampler:
             window_size (int): Segment sequence frame length. Defaults to 2048.
             step_size (int): Overlap shift increment step size. Defaults to 512.
             valid_folds (List[int], optional): Subset lists restricting extraction scopes.
+            valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
             meta_base (Tuple[np.ndarray, np.ndarray], optional): Bound master metadata (Severity, RPM).
                                                                 Defaults to (None, None).
         """
@@ -40,6 +42,7 @@ class FewShotSampler:
         
         self.total_folds, self.total_files, self.channels, self.chunk_len = self.X.shape
         self.valid_folds = valid_folds if valid_folds is not None else list(range(self.total_folds))
+        self.valid_files = valid_files if valid_files is not None else list(range(self.total_files))
         self.windows_per_file = ((self.chunk_len - self.window_size) // self.step_size) + 1
         
         # Extract physical mappings and class capacities
@@ -49,10 +52,12 @@ class FewShotSampler:
     def _map_files_to_classes(self) -> dict:
         """Responsibility: Maps underlying binary file positions based on string categories."""
         mapping = {}
+        allowed_set = set(self.valid_files)
         for i, label in enumerate(self.Y):
-            if label not in mapping:
-                mapping[label] = []
-            mapping[label].append(i)
+            if i in allowed_set:
+                if label not in mapping:
+                    mapping[label] = []
+                mapping[label].append(i)
         return mapping
 
     def _calculate_label_frequencies(self) -> dict:

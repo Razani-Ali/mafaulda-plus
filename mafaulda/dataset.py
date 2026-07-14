@@ -272,6 +272,7 @@ class VirtualSlidingWindow:
     def __init__(self, X_base: np.ndarray, Y_base: np.ndarray, 
                  window_size: int = 2048, step_size: int = 512,
                  valid_folds: List[int] = None,
+                 valid_files: List[int] = None,
                  meta_base: Tuple[np.ndarray, np.ndarray] = (None, None)):
         """
         Initializes the zero-copy virtual window engine.
@@ -290,10 +291,11 @@ class VirtualSlidingWindow:
         
         # Resolve which folds to virtually iterate over
         self.valid_folds = valid_folds if valid_folds is not None else list(range(self.total_folds))
+        self.valid_files = valid_files if valid_files is not None else list(range(self.total_files))
         
         # Calculate mathematical bounds for virtual mapping
         self.windows_per_file = ((self.chunk_len - self.window_size) // self.step_size) + 1
-        self.total_windows = len(self.valid_folds) * self.total_files * self.windows_per_file
+        self.total_windows = len(self.valid_folds) * len(self.valid_files) * self.windows_per_file
 
     def get_window(self, idx: int) -> Tuple[np.ndarray, str, Tuple[Optional[str], Optional[float]]]:
         """
@@ -303,8 +305,8 @@ class VirtualSlidingWindow:
             raise IndexError("Index out of bounds")
             
         # Decouple the flat index into specific fold and file locators using integer division
-        fold_relative_idx = idx // (self.total_files * self.windows_per_file)
-        remainder = idx % (self.total_files * self.windows_per_file)
+        fold_relative_idx = idx // (len(self.valid_files) * self.windows_per_file)
+        remainder = idx % (len(self.valid_files) * self.windows_per_file)
         
         # Decouple remainder to find specific file and internal window index
         file_idx = remainder // self.windows_per_file
@@ -312,17 +314,18 @@ class VirtualSlidingWindow:
         
         # Map back to physical coordinates
         actual_fold = self.valid_folds[fold_relative_idx]
+        actual_file = self.valid_files[file_idx]
         start_pos = win_idx * self.step_size
         end_pos = start_pos + self.window_size
         
         # Perform standard slicing (this yields a fast memory view, not a copy)
-        x_win = self.X[actual_fold, file_idx, :, start_pos:end_pos]
+        x_win = self.X[actual_fold, actual_file, :, start_pos:end_pos]
         
         # Safely extract metadata if it exists
-        sev = None if self.Severity is None else self.Severity[file_idx]
-        rpm = None if self.RPM is None else self.RPM[file_idx]
+        sev = None if self.Severity is None else self.Severity[actual_file]
+        rpm = None if self.RPM is None else self.RPM[actual_file]
 
-        return x_win, self.Y[file_idx], (sev, rpm)
+        return x_win, self.Y[actual_file], (sev, rpm)
 
 
 class PhysicalSlidingWindow:
@@ -331,7 +334,8 @@ class PhysicalSlidingWindow:
     Generates contiguous arrays in RAM without relying on slow Python for-loops.
     """
     def __init__(self, X_base: np.ndarray, Y_base: np.ndarray, 
-                 window_size: int, step_size: int, valid_folds: List[int] = None,
+                 window_size: int, step_size: int,
+                 valid_files: List[int] = None, valid_folds: List[int] = None,
                  meta_base: Tuple[np.ndarray, np.ndarray] = (None, None)):
         """
         Initializes the physical extractor engine.
@@ -344,6 +348,7 @@ class PhysicalSlidingWindow:
         
         self.total_folds, self.total_files, self.channels, self.chunk_len = self.X.shape
         self.valid_folds = valid_folds if valid_folds is not None else list(range(self.total_folds))
+        self.valid_files = valid_files if valid_files is not None else list(range(self.total_files))
         
         self.windows_per_file = ((self.chunk_len - self.window_size) // self.step_size) + 1
         self.total_windows = len(self.valid_folds) * self.total_files * self.windows_per_file
@@ -355,9 +360,12 @@ class PhysicalSlidingWindow:
         print(f"⚠️ Warning: Physically copying {self.total_windows} windows into RAM at C-speed...")
         print("⏳ Please wait. This may take a while depending on your available memory...")
         
-        # Filter folds in one vectorized operation
+        # Filter folds and files in one vectorized operation
         X_valid = self.X[self.valid_folds]
+        X_valid = X_valid[:, self.valid_files]
+        
         V_folds = len(self.valid_folds)
+        V_files = len(self.valid_files)
         
         # Extract memory leap sizes (strides) to manipulate the view mathematically
         stride_fold, stride_file, stride_chan, stride_len = X_valid.strides
@@ -365,28 +373,135 @@ class PhysicalSlidingWindow:
         # Formulate a 5D illusion of overlapping windows using memory strides (Zero-Copy)
         X_5d = np.lib.stride_tricks.as_strided(
             X_valid,
-            shape=(V_folds, self.total_files, self.windows_per_file, self.channels, self.window_size),
+            shape=(V_folds, V_files, self.windows_per_file, self.channels, self.window_size),
             strides=(stride_fold, stride_file, self.step_size * stride_len, stride_chan, stride_len),
             writeable=False
         )
         
         # Flatten the illusion and force a hard physical copy in RAM (blocking operation)
         X_phys = X_5d.reshape(self.total_windows, self.channels, self.window_size).copy()
-        
-        # Vectorize and expand string labels to match the physical window count identically
-        Y_expanded = np.broadcast_to(self.Y.reshape(1, self.total_files, 1), (V_folds, self.total_files, self.windows_per_file)).flatten()
 
-        # Safely broadcast severity metadata if provided
+        # Filter metadata based on valid_files list before broadcasting
+        Y_filtered = self.Y[self.valid_files]
+        Y_expanded = np.broadcast_to(Y_filtered.reshape(1, V_files, 1), (V_folds, V_files, self.windows_per_file)).flatten()
+
+        # Safely broadcast metadata if provided
         if self.Severity is not None:
-            Sev_expanded = np.broadcast_to(self.Severity.reshape(1, self.total_files, 1), (V_folds, self.total_files, self.windows_per_file)).flatten()
+            Sev_filtered = self.Severity[self.valid_files]
+            Sev_expanded = np.broadcast_to(Sev_filtered.reshape(1, V_files, 1), (V_folds, V_files, self.windows_per_file)).flatten()
         else:
             Sev_expanded = None
 
-        # Safely broadcast RPM metadata if provided
         if self.RPM is not None:
-            RPM_expanded = np.broadcast_to(self.RPM.reshape(1, self.total_files, 1), (V_folds, self.total_files, self.windows_per_file)).flatten()
+            RPM_filtered = self.RPM[self.valid_files]
+            RPM_expanded = np.broadcast_to(RPM_filtered.reshape(1, V_files, 1), (V_folds, V_files, self.windows_per_file)).flatten()
         else:
             RPM_expanded = None
         
         print("✅ Physical window extraction complete.")
         return X_phys, Y_expanded, (Sev_expanded, RPM_expanded)
+    
+
+def generate_stratified_file_split(
+    y: np.ndarray, 
+    train_ratio: float = 0.75, 
+    val_ratio: float = 0.25, 
+    random_seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Generates stratified random split indices based on file IDs to prevent data leakage.
+    
+    This function ensures that:
+    1. Windows from the same physical file are never split across Train/Val/Test sets.
+    2. The class distribution (stratification) is maintained across the splits.
+
+    Args:
+        y (np.ndarray): 1D array of labels for each sample.
+        train_ratio (float): Proportion of files to include in the train split.
+        val_ratio (float): Proportion of files to include in the validation split.
+        random_seed (int): Random seed for reproducibility.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray]: (train_indices, val_indices, test_indices)
+    """
+
+    if (train_ratio + val_ratio) > 1.0:
+        raise ValueError(f"Sum of ratios must be less or equal to 1.0, got {train_ratio + val_ratio}")
+
+    np.random.seed(random_seed)
+    
+    train_idx: List[int] = []
+    val_idx: List[int] = []
+    test_idx: List[int] = []
+    
+    unique_labels = np.unique(y)
+    
+    for label in unique_labels:
+        # 1. Find Related Indices
+        label_mask = (y == label)
+        class_indices = np.where(label_mask)[0]
+        
+        # 2. Extract and Shuffle Unique Files
+        shuffled_indices = class_indices.copy()
+        np.random.shuffle(shuffled_indices)
+        
+        total_files = len(shuffled_indices)
+        if total_files == 0:
+            continue
+            
+        # 3. Slicing calculations for very low file counts (e.g., CWRU/MAFAULDA)
+        test_ratio = 1.0 - (train_ratio + val_ratio)
+        
+        if total_files >= 4 and test_ratio > 0.02 and val_ratio > 0.02:
+            # Standard balanced split for adequate file sizes
+            train_count = int(np.floor(total_files * train_ratio))
+            val_count = int(np.ceil(total_files * val_ratio))
+            
+            if train_count + val_count >= total_files:
+                train_count = max(1, total_files - val_count - 1)
+            
+            train_end = max(1, train_count)
+            val_end = train_end + max(1, val_count)
+            
+        else:
+            # Handle extreme low-file regimes (e.g., exactly 4 files per class)
+            if test_ratio <= 0.02 or np.isclose(test_ratio, 0.0):
+                # 2-way split (Train / Val only, No Test set)
+                if total_files == 4:
+                    train_end = 3
+                    val_end = 4
+                else:
+                    train_end = max(1, int(np.round(total_files * train_ratio)))
+                    val_end = total_files
+            else:
+                # 3-way split with very limited files -> Distribution skew is inevitable
+                print(
+                    f"Class '{label}' has only {total_files} file(s). Performing a strict 3-way split "
+                    "in a low-file regime will inevitably skew the statistical class distribution across splits. "
+                    "Consider setting val_ratio=0.0 for a clean 2-way split.")
+                
+                if total_files == 4:
+                    train_end = 2  # 2 files for Train
+                    val_end = 3    # 1 file for Val (Remaining 1 file goes to Test)
+                elif total_files == 3:
+                    train_end = 1
+                    val_end = 2
+                else:
+                    train_end = 1
+                    val_end = total_files
+
+        # Distribute file nodes directly matching the index matrix
+        train_idx.extend(shuffled_indices[:train_end])
+        val_idx.extend(shuffled_indices[train_end:val_end])
+        test_idx.extend(shuffled_indices[val_end:])
+    
+    train_idx_arr = np.array(train_idx, dtype=int)
+    val_idx_arr = np.array(val_idx, dtype=int)
+    test_idx_arr = np.array(test_idx, dtype=int)
+
+    # 6. Final Shuffle
+    np.random.shuffle(train_idx_arr)
+    np.random.shuffle(val_idx_arr)
+    np.random.shuffle(test_idx_arr)
+    
+    return train_idx_arr, val_idx_arr, test_idx_arr
