@@ -324,7 +324,6 @@ def get_pytorch_dataloader(
     shuffle: bool = True,
     valid_folds: Optional[List[int]] = None,
     valid_files: Optional[List[int]] = None,
-    meta_base: Tuple[np.ndarray, np.ndarray] = (None, None),
     **dataloader_kwargs
 ):
     """
@@ -341,15 +340,14 @@ def get_pytorch_dataloader(
         shuffle (bool): Randomizes batch sequence orderings if True.
         valid_folds (List[int], optional): Targeted cross-validation subset regions.
         valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
-        meta_base (Tuple[np.ndarray, np.ndarray]): Master metadata tuple (Severity, RPM).
         **dataloader_kwargs: Arbitrary keyword options fed directly to torch.utils.data.DataLoader.
 
     Returns:
-        torch.utils.data.DataLoader: A native, zero-copy loader yielding batches of X, Y, (Sev, RPM).
+        torch.utils.data.DataLoader: A native, zero-copy loader yielding batches of X, Y.
     """
     from torch.utils.data import DataLoader
     vw = VirtualSlidingWindow(
-        X_base=X_base, Y_base=Y_base, meta_base=meta_base, valid_files=valid_files,
+        X_base=X_base, Y_base=Y_base, valid_files=valid_files,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds
     )
     wrapper = PyTorchMafauldaDataset(virtual_window=vw, class_to_idx=class_to_idx)
@@ -365,7 +363,6 @@ def get_tensorflow_dataset(
     batch_size: int = 32,
     valid_folds: Optional[List[int]] = None,
     valid_files: Optional[List[int]] = None,
-    meta_base: Tuple[np.ndarray, np.ndarray] = (None, None),
 ):
     """
     Builds an optimized tf.data.Dataset pipeline connected directly to the zero-copy sliding matrix.
@@ -380,13 +377,12 @@ def get_tensorflow_dataset(
         batch_size (int): Number of arrays packaged inside each parallel streaming batch.
         valid_folds (List[int], optional): Restrict evaluation or sampling to selected cross-validation spaces.
         valid_files (List[int], optional): Subset array of allowed structural file indices to bypass data leakage.
-        meta_base (Tuple[np.ndarray, np.ndarray]): Master metadata tracking properties.
 
     Returns:
         tf.data.Dataset: A high-throughput pre-batched and pre-fetched tensorflow stream instance.
     """
     vw = VirtualSlidingWindow(
-        X_base=X_base, Y_base=Y_base, meta_base=meta_base, valid_files=valid_files,
+        X_base=X_base, Y_base=Y_base, valid_files=valid_files,
         window_size=window_size, step_size=step_size, valid_folds=valid_folds
     )
     wrapper = TFMafauldaGenerator(virtual_window=vw, class_to_idx=class_to_idx)

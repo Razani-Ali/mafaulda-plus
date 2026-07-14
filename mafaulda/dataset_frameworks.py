@@ -38,7 +38,6 @@ class PyTorchMafauldaDataset:
                 # Convert the NumPy arrays/values into native PyTorch tensors
                 x_tensor = self.parent.torch.tensor(x_np, dtype=self.parent.torch.float32)
                 y_tensor = self.parent.torch.tensor(self.parent.class_to_idx[y_str], dtype=self.parent.torch.long)
-                # Convert to tensor ONLY if the value is not None, otherwise preserve None
 
                 # Return the exact requested nested format to the DataLoader
                 return x_tensor, y_tensor
@@ -85,10 +84,6 @@ class TFMafauldaGenerator:
             output_signature=(
                 self.tf.TensorSpec(shape=(self.vw.channels, self.vw.window_size), dtype=self.tf.float16), # X
                 self.tf.TensorSpec(shape=(), dtype=self.tf.int32),                                       # Y
-                (
-                    self.tf.TensorSpec(shape=(), dtype=self.tf.string),                                  # Severity
-                    self.tf.TensorSpec(shape=(), dtype=self.tf.float32)                                  # RPM
-                )
             )
         )
         # Apply batching and parallel prefetching for maximum GPU throughput
