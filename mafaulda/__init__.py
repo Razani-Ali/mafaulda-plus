@@ -26,13 +26,15 @@ Available Functions:
 
 import numpy as np
 from typing import Dict, Callable, List, Tuple, Union, Optional
-
+import os
 from .downloader import SecureResumableDownloader
 from .ingestion import MAFAULDAIngestor
 from .filtering import ParallelZarrFilterEngine
 from .dataset import MAFAULDARawLoader, PhysicalSlidingWindow, VirtualSlidingWindow, generate_stratified_file_split
 from .dataset_frameworks import PyTorchMafauldaDataset, TFMafauldaGenerator
 from .fewshot_sampler import FewShotSampler
+import tempfile
+from .transform import transform_and_save, FlatMapFeatureDataset
 
 
 def download(
@@ -387,3 +389,86 @@ def get_tensorflow_dataset(
     )
     wrapper = TFMafauldaGenerator(virtual_window=vw, class_to_idx=class_to_idx)
     return wrapper.get_dataset(batch_size=batch_size)
+
+
+def disk_streamed_concat(
+    tensors: Tuple[np.ndarray, ...], 
+    axis: int = 0, 
+    output_path: str = None, 
+    chunk_size: int = 1000
+) -> np.memmap:
+    """Physically concatenates memory-mapped arrays into a new persistent file.
+    
+    Streams the data block-by-block using tiny transitional RAM buffers to 
+    prevent memory overflow (OOM).
+
+    Args:
+        tensors (Tuple[np.ndarray, ...]): List of input memmap arrays.
+        output_path (str): File system destination for the new memmap container.
+        axis (int): Target axis along which concatenation is executed.
+        chunk_size (int): Size of the streaming buffer window along the concatenated axis.
+
+    Returns:
+        np.memmap: The newly compiled and mapped contiguous numpy array on disk.
+    """
+    # 1. Compute and validate structural dimensions
+    ndim = tensors[0].ndim
+    dtype = tensors[0].dtype
+    shapes = [t.shape for t in tensors]
+    
+    # Calculate unified target shape dimensions
+    target_shape = list(shapes[0])
+    target_shape[axis] = sum(s[axis] for s in shapes)
+    target_shape = tuple(target_shape)
+    
+    # Secure parent directories
+    temp_path = os.path.join(tempfile.gettempdir(), 'mafaulda_ml_ready.dat')
+    directory = output_path if output_path else temp_path
+    os.makedirs(os.path.dirname(directory), exist_ok=True)
+    
+    # 2. Allocate the empty physical container directly on the disk
+    out_memmap = np.memmap(output_path, dtype=dtype, mode='w+', shape=target_shape)
+    
+    # 3. Stream data from source files to destination in blocks (Zero-RAM copy)
+    current_offset = 0
+    for _, src_tensor in enumerate(tensors):
+        src_size = src_tensor.shape[axis]
+        
+        # Iterate and transfer data chunk-by-chunk along the target axis
+        for start in range(0, src_size, chunk_size):
+            end = min(start + chunk_size, src_size)
+            
+            # Setup dynamic slicing indices
+            src_slices = [slice(None)] * ndim
+            src_slices[axis] = slice(start, end)
+            
+            dest_slices = [slice(None)] * ndim
+            dest_slices[axis] = slice(current_offset + start, current_offset + end)
+            
+            # Read a tiny chunk into RAM and write it instantly back to the new disk file
+            out_memmap[tuple(dest_slices)] = src_tensor[tuple(src_slices)]
+            
+        # Update partition offset for the next file
+        current_offset += src_size
+        
+    # Flush I/O buffers to ensure all bytes are physically written to the hard drive
+    out_memmap.flush()
+    print(f"✅ Persistent physical concatenation complete: '{output_path}'")
+    
+    return out_memmap
+
+__all__ = [
+    "transform_and_save",
+    "FlatMapFeatureDataset",
+    "download",
+    "ingest",
+    "filter",
+    "load",
+    "stratified_file_split",
+    "SlidingWindow",
+    "VirtualWindowing",
+    "sample_few_shot_tasks",
+    "get_pytorch_dataloader",
+    "get_tensorflow_dataset",
+    "disk_streamed_concat"
+]

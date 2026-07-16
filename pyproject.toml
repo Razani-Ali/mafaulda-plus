@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mafaulda-plus"
-version = "0.1.0"
+version = "0.2.0"
 description = "An enterprise-grade, concurrent, and zero-copy ingestion, filtering, and windowing pipeline for the MAFAULDA machinery fault diagnosis dataset."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,6 @@ authors = [
     { name = "Ali Razani" }
 ]
 
-# 🚀 کلمات کلیدی غنی شده برای هدایت دقیق‌تر کاربران و بهبود سئو پکیج
 keywords = [
     "mafaulda", 
     "bearing-fault-diagnosis", 

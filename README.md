@@ -110,6 +110,50 @@ X_phys, Y_phys, meta_phys = mafaulda.SlidingWindow(
 ```
 
 ---
+## 🛡️ Leakage-Free Dataset Splitting & Multi-Framework Deployment
+In machinery fault diagnosis (such as CWRU or MAFAULDA benchmarks), performing a random split after applying a sliding window creates catastrophic Data Leakage. Because adjacent windows overlap, the model will essentially memorize the time-series segments during training, leading to artificially inflated test accuracies that fail in real-world validation.
+
+To maintain scientific integrity, MAFAULDA-Plus enforces strict File-Level Stratified Splitting. This ensures that:
+
+*   1. All overlapping windows originating from the same physical file are contained within the exact same partition (Train, Val, or Test).
+
+*  2. The global statistical class distribution is perfectly maintained across all splits without moving or copying a single byte in memory.
+
+🚀 Minimal Production Example
+Here is how you can load the massive base tensors, partition the files cleanly, and spin up production pipelines for PyTorch, TensorFlow, and Few-Shot samplers with a near-zero RAM footprint:
+
+```python
+import mafaulda
+
+# 1. Memory-Map Database Tensors (Zero-RAM Overhead Loading)
+X_base, Y_base, meta_base = mafaulda.load(
+    zarr_path="data/MAFAULDA.zarr")
+
+# 2. File-Level Stratified Partitioning (Strict Experiment Isolation)
+tr_idx, val_idx, te_idx = mafaulda.stratified_file_split(
+    y=Y_base, 
+    train_ratio=0.7, 
+    val_ratio=0.2, 
+    random_seed=42 
+)
+
+# 🔥 You can Pass Splitting Indices to Any Function That has 'valid_files' Argument
+# e.g. SlidingWindow, sample_few_shot_tasks, ... like 'valid_folds' argument
+train_loader_torch = mafaulda.get_pytorch_dataloader(
+    X_base=X_base, Y_base=Y_base
+    window_size=1024, step_size=512, valid_files=tr_idx)
+
+```
+
+⚠️ **WARNING ON DISTRIBUTIONAL LEAKAGE:**
+
+While restricting fold allocations via the `valid_folds` parameter guarantees zero exact data-point overlap (preventing direct sample leakage), users must exercise extreme caution.
+``
+Because structural vibration signals exhibit strong quasi-stationarity and temporal correlation over long continuous runs, splitting a single physical signal time-series into sequential folds (e.g., using fold 1 for training and fold 2 for validation) can introduce severe Distributional Leakage (Covariate Shift). The statistical characteristics of contiguous time segments remain highly similar, which can artificially inflate validation metrics and lead to overly optimistic performance estimates.
+
+For statistically rigorous benchmarking, it is strongly recommended to perform cross-validation strictly by shuffling independent physical files via `valid_files` rather than relying solely on sequential temporal sub-segment folds.
+
+---
 
 ## 🔬 Advanced: Scientific Digital Signal Processing (DSP)
 
