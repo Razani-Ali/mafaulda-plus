@@ -9,6 +9,7 @@ from .dataset_frameworks import PyTorchMafauldaDataset, TFMafauldaGenerator
 from .fewshot_sampler import FewShotSampler
 import tempfile
 from .transform import ZeroRAMFeatureWorkspace, load_zarr_to_tensor
+from .featureset_frameworks import sample_few_shot_features, get_pytorch_feature_loader, get_tensorflow_featureset
 
 
 def download(
@@ -488,6 +489,10 @@ def feature_extraction_pipeline(
 __all__ = [
     "",
     "load_zarr_to_tensor",
+    "sample_few_shot_features",
+    "get_pytorch_feature_loader",
+    "get_tensorflow_featureset",
+    "feature_extraction_pipeline",
     "download",
     "ingest",
     "filter",
