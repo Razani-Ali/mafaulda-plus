@@ -1,29 +1,3 @@
-"""
-MAFAULDA Dataset Ingestion, Filtering & Downsampling Engine
-===========================================================
-
-This module provides a unified, high-performance, and professional entry point for 
-downloading, extracting, ingesting, and preprocessing the MAFAULDA machinery 
-fault diagnosis dataset.
-
-It completely abstracts away complex object-oriented patterns, multi-threaded 
-downloading, and parallel process-based Zarr serialization/filtering, exposing 
-clean, single-function APIs for the end user.
-
-Available Functions:
--------------------
-    * download: Triggers a secure, concurrent, and verified download.
-    * ingest: Concurrently parses raw CSV files into a compressed Zarr DB.
-    * filter: Concurrently applies custom filters and changes length.
-    * load: Extracts and parallel-populates standardized continuous tensors.
-    * SlidingWindow: Generates flattened continuous window slices in RAM via C-backend.
-    * VirtualWindowing: Spawns a zero-copy virtual window engine for on-demand indexing.
-    * FewShotSampler: Samples stratified, reproducible task episodes (balanced or imbalanced).
-    * get_pytorch_dataloader: Spawns a zero-copy PyTorch DataLoader wrapper.
-    * get_tensorflow_dataset: Spawns a high-performance tf.data.Dataset pipeline.
-
-"""
-
 import numpy as np
 from typing import Dict, Callable, List, Tuple, Union, Optional
 import os
@@ -34,7 +8,7 @@ from .dataset import MAFAULDARawLoader, PhysicalSlidingWindow, VirtualSlidingWin
 from .dataset_frameworks import PyTorchMafauldaDataset, TFMafauldaGenerator
 from .fewshot_sampler import FewShotSampler
 import tempfile
-from .transform import transform_and_save, FlatMapFeatureDataset
+from .transform import ZeroRAMFeatureWorkspace, load_zarr_to_tensor
 
 
 def download(
@@ -457,9 +431,63 @@ def disk_streamed_concat(
     
     return out_memmap
 
+
+def feature_extraction_pipeline(
+    X_raw: np.ndarray,
+    Y_raw: np.ndarray,
+    window_size: int,
+    step_size: int,
+    transform_fn: Callable[[np.ndarray], np.ndarray],
+    save_zarr_path: str,
+    meta_raw: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None),
+):
+    """Orchestrates an end-to-end, Zero-RAM streaming feature extraction pipeline.
+
+    This function serves as a high-level engineering wrapper over the object-oriented 
+    ZeroRAMFeatureWorkspace class. It abstracts away class instantiation complexities, 
+    dynamically slices sliding windows on the fly, automatically broadcasts 1D file-level 
+    metadata into aligned 3D Zarr arrays [Folds, Files, Windows], and processes 
+    large datasets file-by-file to prevent out-of-memory (OOM) crashes.
+
+    Args:
+        X_draw (np.ndarray): Foundational 4D raw signal tensor. 
+                               Shape must be [Folds, Files, Channels, Length].
+        Y_raw (np.ndarray): 1D array of original string labels matching the Files dimension.
+        window_size (int): Temporal frame length of each sliding window segment.
+        step_size (int): Overlap shift increment step size for window sliding.
+        transform_fn (Callable): Feature extraction function accepting a 2D window matrix 
+                                 of shape [Channels, window_size] and returning a 
+                                 transformed NumPy feature vector/matrix.
+                               Shape: [Files].
+        save_zarr_path (str): File system destination path to compile and secure the Zarr database.
+        meta_raw (Tuple): A tuple containing parallel tracking metadata arrays:
+                             (Severity array or None, RPM array or None). Shapes: [Files].
+
+    Returns:
+        zarr.Group: The direct read-write root group pointer of the persistent Zarr database.
+                    Contains chunked 'features', 'labels', 'severity', and 'rpm' arrays.
+    """
+    # 1. Instantiate the single-responsibility workspace backend internally
+    workspace = ZeroRAMFeatureWorkspace(
+        window_size=window_size,
+        step_size=step_size,
+        transform_fn=transform_fn
+    )
+    
+    # 2. Trigger the orchestrated pipeline execution and pass parameters down
+    zarr_root = workspace.execute(
+        X_raw=X_raw,
+        Y_raw=Y_raw,
+        meta_raw=meta_raw,
+        save_zarr_path=save_zarr_path
+    )
+    
+    return zarr_root
+
+
 __all__ = [
-    "transform_and_save",
-    "FlatMapFeatureDataset",
+    "",
+    "load_zarr_to_tensor",
     "download",
     "ingest",
     "filter",
