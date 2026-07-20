@@ -60,6 +60,10 @@ class TFMafauldaGenerator:
         self.tf = tf
         self.vw = virtual_window
         self.class_to_idx = class_to_idx
+        
+        sample_x, _, _ = self.vw.get_window(0)
+        self.feature_shape = sample_x.shape
+        self.feature_dtype = self.tf.as_dtype(sample_x.dtype)
 
     def _generator(self):
         """Internal generator yielding individual window instances."""
@@ -82,7 +86,7 @@ class TFMafauldaGenerator:
         dataset = self.tf.data.Dataset.from_generator(
             self._generator,
             output_signature=(
-                self.tf.TensorSpec(shape=(self.vw.channels, self.vw.window_size), dtype=self.tf.float16), # X
+                self.tf.TensorSpec(shape=self.feature_shape, dtype=self.feature_dtype), # X
                 self.tf.TensorSpec(shape=(), dtype=self.tf.int32),                                       # Y
             )
         )
