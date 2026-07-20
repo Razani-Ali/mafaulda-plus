@@ -82,7 +82,7 @@ class ZeroRAMFeatureWorkspace:
 
         # Initialize Storage Group
         os.makedirs(os.path.dirname(save_zarr_path) if os.path.dirname(save_zarr_path) else ".", exist_ok=True)
-        store = zarr.DirectoryStore(save_zarr_path)
+        store = zarr.LocalStore(root=save_zarr_path)
         root = zarr.group(store=store, overwrite=True)
 
         # Allocate features tensor on disk
