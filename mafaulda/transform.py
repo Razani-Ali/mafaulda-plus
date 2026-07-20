@@ -1,6 +1,7 @@
 import os
 import gc
 import zarr
+from zarr.storage import LocalStore
 import numpy as np
 from tqdm.auto import tqdm
 from typing import Callable, Tuple, Optional, Any, Optional, List, Union, Dict
@@ -82,7 +83,7 @@ class ZeroRAMFeatureWorkspace:
 
         # Initialize Storage Group
         os.makedirs(os.path.dirname(save_zarr_path) if os.path.dirname(save_zarr_path) else ".", exist_ok=True)
-        store = zarr.LocalStore(root=save_zarr_path)
+        store = LocalStore(root=save_zarr_path)
         root = zarr.group(store=store, overwrite=True)
 
         # Allocate features tensor on disk
