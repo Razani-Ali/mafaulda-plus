@@ -31,19 +31,18 @@ class ZeroRAMFeatureWorkspace:
                                  dtype: Any):
         
         """Responsibility: Vectorized broadcasting of 1D file metadata into 3D space directly on disk."""
-        
+
         # Shape shift: (N,) -> (1, N, 1) -> (F, N, W)
         broadcasted_view = np.broadcast_to(data[None, :, None], shape)
 
         try:
             root.create_array(
                 name=name,
-                shape=shape,
                 dtype=dtype,
                 data=broadcasted_view,
                 chunks=shape
             )
-        except (AttributeError, TypeError):
+        except (AttributeError, TypeError, ValueError):
             try:
                 root.array(name, broadcasted_view, dtype=dtype)
             except AttributeError:
