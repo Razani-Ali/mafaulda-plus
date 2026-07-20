@@ -79,16 +79,37 @@ class ZeroRAMFeatureWorkspace:
         D = dummy_feature.shape
         feature_shape = (F, N, W) + D
         
-        print(f"📏 Feature Dimension Discovered: {D} -> Mapping 3D Metadata with Shape: {meta_shape}")
+        print(f"📏 Feature Dimension Discovered: {D} -> Mapping X data with Shape: {feature_shape}")
 
         # Initialize Storage Group
         os.makedirs(os.path.dirname(save_zarr_path) if os.path.dirname(save_zarr_path) else ".", exist_ok=True)
-        store = LocalStore(root=save_zarr_path)
-        root = zarr.group(store=store, overwrite=True)
+        try:
+            store = LocalStore(root=save_zarr_path)
+            root = zarr.open_group(store=store, mode='w')
+        except (ImportError, AttributeError):
+            try:
+                store = zarr.DirectoryStore(save_zarr_path)
+                root = zarr.group(store=store, overwrite=True)
+            except AttributeError:
+                root = zarr.open_group(save_zarr_path, mode='w')
 
         # Allocate features tensor on disk
-        z_feat = root.zeros('features', shape=feature_shape, chunks=(1, 1, W) + D, dtype=dummy_feature.dtype)
-        
+        try:
+            z_feat = root.create_array(
+                name='features', 
+                shape=feature_shape, 
+                chunks=((1, 1, W) + D), 
+                dtype=dummy_feature.dtype, 
+                fill_value=0
+            )
+        except TypeError:
+            z_feat = root.zeros(
+                'features', 
+                shape=feature_shape, 
+                chunks=((1, 1, W) + D), 
+                dtype=dummy_feature.dtype
+            )
+
         # 🚀 Broadcast metadata to match [F, N, W] structural layout instantly
         self._broadcast_and_save_meta(root, 'labels', Y_raw, meta_shape, object)
         if Severity is not None: 
