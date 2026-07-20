@@ -243,6 +243,123 @@ X_task, Y_task, _ = sampler.sample(
 ```
 
 ---
+
+# 🛠️ Zero-RAM Streaming Feature Engineering Pipeline
+
+Processing raw, high-frequency machinery diagnostics datasets presents a classic engineering trade-off: **handcrafted statistical libraries (like TSFEL) provide immense diagnostic value but impose devastating computational bottlenecks during training loops.**
+
+`mafaulda-plus` resolves this by introducing a highly optimized **Zero-RAM Feature Extraction Pipeline**. By transforming continuous, multi-fold raw signals directly onto disk-backed grid architectures (`Zarr`), it allows you to run expensive feature extraction **exactly once**, bypassing multiprocessing overheads and unlocking microsecond downstream data recovery for PyTorch and TensorFlow.
+
+
+### 🚀 Key Advantages
+
+* **Immense Temporal Recovery:** Extracting rich time-series domains (statistical, temporal, and spectral features via TSFEL) takes roughly **0.1 seconds per window**. For large-scale diagnostics arrays, sequential training will quickly choke your CPU. This pipeline executes the stream once, flushes it to disk, and allows subsequent ML iterations to load the complete multi-dimensional feature space instantly.
+* **Dynamic Dimension Agnostic Views:** The injected `transform_fn` is completely decoupled from the data pipeline structure. It can return a NumPy array of **any shape or dimensionality** (e.g., standard flat feature vectors, or cross-channel covariance matrices). The framework automatically adapts its disk chunks to preserve your configuration.
+* **Leakage-Free Architectural Integrity:** Metadata tracking parameters (`Labels`, `Severity`, `RPM`) are automatically broadcasted to match the exact generated window grids. Data partitioning is enforced strictly at the physical file level, completely preventing cross-validation data leakage or covariate shifts.
+
+### 🛠️ Minimal Production Example
+
+Here is how easily you can stream, archive, and materialize a clean `PyTorch` or `TensorFlow` machine learning dataset with minimal code footprint:
+
+```python
+import mafaulda
+import tsfel
+import numpy as np
+
+# 1. Access the optimal TSFEL extraction configuration
+cfg = tsfel.get_features_by_domain("statistical")
+
+# 2. Define your hybrid feature extractor (Accepts shape: [Channels, Length])
+def machinery_tsfel_extractor(window_2d: np.ndarray) -> np.ndarray:
+    features = []
+    # Extract features channel-by-channel
+    for ch in range(window_2d.shape[0]):
+        df = tsfel.time_series_features_extractor(cfg, window_2d[ch], fs=50000, verbose=0)
+        features.extend(df.iloc[0].values)
+    
+    # Inject cross-channel interaction matrix (e.g., Covariance)
+    features.append(np.cov(window_2d[0], window_2d[1])[0, 1])
+    return np.array(features)
+
+# 3. Stream & Compile to Zarr on disk with absolute ZERO memory leakage
+zarr_root = mafaulda.feature_extraction_pipeline(
+    X_raw=X_base, Y_raw=Y_base, meta_raw=meta_base,
+    window_size=1024, step_size=512,
+    transform_fn=machinery_tsfel_extractor,
+    save_zarr_path="data/engineered_features.zarr",
+    sensor_names=['UH Axial Acc',
+    'the rest of sensors passed to mafaulda.load argument: selected_sensors']
+)
+
+# 4. Filter and memory-map the heavy array on disk while lightweight meta hits RAM
+X_feat, Y_feat, meta_feat = mafaulda.load_zarr_to_tensor(
+    zarr_path="data/engineered_features.zarr",
+    as_memmap=True,
+    memmap_path="data/final_features.dat",
+    selected_sensors='all',
+    target_classes=['normal', 'imbalance']
+)
+
+# 5. Spawn immediate PyTorch Dataloader for downstream Few-Shot or Deep Learning models
+torch_loader = mafaulda.get_pytorch_feature_loader(
+    X_base=X_feat, Y_base=Y_feat, meta_base=meta_feat,
+    class_to_idx={'normal': 0, 'imbalance': 1},
+    batch_size=32, shuffle=True,
+    valid_folds=[0, 1, 2], valid_files=[0, 1, 2, 3, 4]
+)
+# get_tensorflow_featureset & sample_few_shot_features are tailored for this, as well as get_pytorch_feature_loader
+
+```
+
+
+
+### ⚠️ Performance Anti-Pattern Alert
+
+> Do **NOT** use this offline workspace to pre-compute and store massive 2D or 3D image-like representations (such as massive Continuous Wavelet Transform (CWT) matrices or high-resolution STFT spectrograms) for deep learning models. Storing millions of redundant floating-point matrix coordinates on disk will drastically inflate file sizes and severely bottle your storage I/O bandwidth during batch ingestion.> **The Right Way:** For heavy spectral image matrices, store the raw compressed time-domain arrays via `mafaulda-plus` and enforce the spatial transformations **on-the-fly** inside the PyTorch/TensorFlow pipeline on a per-batch basis utilizing GPU operations. Keep this offline workspace exclusively reserved for **statistical, handcrafted, or lightweight tabular feature blocks (like TSFEL)**.
+
+---
+
+## 💡 Pro Tip: Multi-Domain Continuum via Disk-Streamed Concatenation
+
+In real-world rotordynamic diagnostics, training robust cross-domain architectures requires merging distinct operational regimes (e.g., separating low-speed and high-speed motor dynamics into a unified training continuum). 
+
+Instead of blowing up your system RAM by loading and stacking numpy arrays in-memory, `mafaulda-plus` allows you to stream out-of-core memory-mapped tensors and physically unify them directly on your hard drive with absolute zero memory overhead.
+
+Here is how you can seamlessly stitch multi-domain RPM datasets under a compact code footprint:
+
+```python
+import mafaulda
+
+# 1. Load two heavy, distinct operational domains via zero-RAM memory maps
+X_domain1, _, _ = mafaulda.load(
+    zarr_path="data/mafaulda_master.zarr",
+    rpm_range=(600, 1200),
+    target_classes=['normal', 'imbalance'],
+    use_memmap=True
+)
+
+X_domain2, _, _ = mafaulda.load(
+    zarr_path="data/mafaulda_master.zarr",
+    rpm_range=(1800, 2400),
+    target_classes=['normal', 'imbalance'],
+    use_memmap=True
+)
+
+print(f"📡 Domain 1 Files: {X_domain1.shape[1]} | Domain 2 Files: {X_domain2.shape[1]}")
+
+# 2. Concurrently stream and forge a unified memory-mapped domain on disk
+X_unified_memmap = mafaulda.disk_streamed_concat(
+    tensors=(X_domain1, X_domain2),
+    axis=1,         # Contiguously stitch along the physical File axis
+    output_path="data/multi_domain_unified.dat",
+    chunk_size=5    # Isolated transactional chunk caching bounds
+)
+
+print(f"📊 Unified Master Shape: {X_unified_memmap.shape}")
+# Ready to be wrapped by VirtualFeatureWindow or downstream framework dataloaders!
+```
+
+---
 ## 🚀 Performance Benchmarks & Core Advantages
 
 This library is engineered to modernize data pipelines for massive industrial time-series datasets. It completely eliminates traditional bottlenecks such as Out-Of-Memory (OOM) crashes, cloud storage freezing, and CPU-bound digital signal processing.
