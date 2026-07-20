@@ -38,16 +38,27 @@ class ZeroRAMFeatureWorkspace:
         try:
             root.create_array(
                 name=name,
-                dtype=dtype,
                 data=broadcasted_view,
                 chunks=shape
             )
+
         except (AttributeError, TypeError, ValueError):
             try:
-                root.array(name, broadcasted_view, dtype=dtype)
-            except AttributeError:
-                z_arr = root.create_dataset(name, shape=shape, dtype=dtype, chunks=shape)
+                z_arr = root.create_array(
+                    name=name,
+                    shape=shape,
+                    dtype=dtype,
+                    chunks=shape,
+                    fill_value="" if dtype == object else 0
+                )
                 z_arr[:] = broadcasted_view
+
+            except (AttributeError, TypeError):
+                try:
+                    z_arr = root.zeros(name, shape=shape, dtype=dtype, chunks=shape)
+                    z_arr[:] = broadcasted_view
+                except AttributeError:
+                    root[name] = broadcasted_view
 
     def _process_single_file(self, file_tensor: np.ndarray,
                              num_windows: int, feature_dims: Tuple[int, ...]
