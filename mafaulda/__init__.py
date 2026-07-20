@@ -441,6 +441,7 @@ def feature_extraction_pipeline(
     transform_fn: Callable[[np.ndarray], np.ndarray],
     save_zarr_path: str,
     meta_raw: Tuple[Optional[np.ndarray], Optional[np.ndarray]] = (None, None),
+    sensor_names: List[str] = None,
 ):
     """Orchestrates an end-to-end, Zero-RAM streaming feature extraction pipeline.
 
@@ -463,6 +464,9 @@ def feature_extraction_pipeline(
         save_zarr_path (str): File system destination path to compile and secure the Zarr database.
         meta_raw (Tuple): A tuple containing parallel tracking metadata arrays:
                              (Severity array or None, RPM array or None). Shapes: [Files].
+        sensor_names: (List of str): A list containing sensor names ordered as sensor order
+                            in channel dimension. To become more precise, pass it same as
+                            selected_sensors argument in mafaulda.load function
 
     Returns:
         zarr.Group: The direct read-write root group pointer of the persistent Zarr database.
@@ -480,7 +484,8 @@ def feature_extraction_pipeline(
         X_raw=X_raw,
         Y_raw=Y_raw,
         meta_raw=meta_raw,
-        save_zarr_path=save_zarr_path
+        save_zarr_path=save_zarr_path,
+        sensor_names=sensor_names,
     )
     
     return zarr_root
