@@ -149,9 +149,6 @@ class ZeroRAMFeatureWorkspace:
             
             # Flush block to disk
             z_feat[:, file_idx, ...] = extracted_block
-            
-            del file_chunk, extracted_block
-            gc.collect()
 
         print(f"✅ Secure Zarr DB Compiled at: '{save_zarr_path}'")
         return root
