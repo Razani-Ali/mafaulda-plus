@@ -25,37 +25,35 @@ class ZeroRAMFeatureWorkspace:
         """Responsibility: Mathematical projection of the sliding window boundaries."""
         return ((signal_length - self.window_size) // self.step_size) + 1
 
-    def _broadcast_and_save_meta(self, root: zarr.Group, name: str,
-                                 data: np.ndarray,
-                                 shape: Tuple[int, int, int],
-                                 dtype: Any):
-        
+    def _broadcast_and_save_meta(self, root: zarr.Group, name: str, data: np.ndarray, shape: Tuple[int, int, int], dtype: Any):
         """Responsibility: Vectorized broadcasting of 1D file metadata into 3D space directly on disk."""
-
         # Shape shift: (N,) -> (1, N, 1) -> (F, N, W)
         broadcasted_view = np.broadcast_to(data[None, :, None], shape)
-
-        try:
-            root.create_array(
-                name=name,
-                data=broadcasted_view,
-                chunks=shape
-            )
-
-        except (AttributeError, TypeError, ValueError):
+        
+        if dtype == object:
+            fixed_string_data = broadcasted_view.astype('U32')
             try:
-                z_arr = root.create_array(
+                root.create_array(
                     name=name,
-                    shape=shape,
-                    dtype=dtype,
-                    chunks=shape,
-                    fill_value="" if dtype == object else 0
+                    data=fixed_string_data,
+                    chunks=shape
                 )
-                z_arr[:] = broadcasted_view
-
-            except (AttributeError, TypeError):
+            except (AttributeError, TypeError, ValueError):
                 try:
-                    z_arr = root.zeros(name, shape=shape, dtype=dtype, chunks=shape)
+                    z_arr = root.create_array(name=name, shape=shape, dtype='U32', chunks=shape)
+                    z_arr[:] = fixed_string_data
+                except AttributeError:
+                    root[name] = fixed_string_data
+        else:
+            try:
+                root.create_array(
+                    name=name,
+                    data=broadcasted_view,
+                    chunks=shape
+                )
+            except (AttributeError, TypeError, ValueError):
+                try:
+                    z_arr = root.create_array(name=name, shape=shape, dtype=dtype, chunks=shape)
                     z_arr[:] = broadcasted_view
                 except AttributeError:
                     root[name] = broadcasted_view
@@ -260,9 +258,10 @@ def load_zarr_to_tensor(
 
     # Slice the RAM-loaded metadata to match only valid files
     # Preserves shape [Folds, N_valid, Windows]
-    Y_ram = full_Y[:, valid_files, :]
-    Sev_ram = full_Sev[:, valid_files, :] if full_Sev is not None else None
-    RPM_ram = full_RPM[:, valid_files, :] if full_RPM is not None else None
+    print("🧠 Ingesting lightweight metadata arrays directly into RAM...")
+    Y_ram = root['labels'][:].astype(object) # 👈 تبدیل مجدد به object برای سازگاری با سیستم‌های قدیمی
+    Sev_ram = root['severity'][:].astype(object) if 'severity' in root else None # 👈 اصلاح کپی
+    RPM_ram = root['rpm'][:] if 'rpm' in root else None
 
     # --- APPLY CHANNEL-LEVEL FILTERS ---
     valid_channels = slice(None)
