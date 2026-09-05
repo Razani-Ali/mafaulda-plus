@@ -36,8 +36,8 @@ class FewShotSampler:
         """Initializes the Few-Shot Sampler with structured file partitions.
 
         Args:
-            X_base (np.ndarray): Foundational 5D memory-mapped or In-RAM tensor.
-            Y_base (np.ndarray): Master 1D array of original string labels.
+            X_base (np.ndarray): Foundational memory-mapped or In-RAM tensor.
+            Y_base (np.ndarray): Array of original string labels.
             numeric_to_string (Dict[int, str]): Mapping of integer labels to string classes.
             window_size (int): Temporal frame length. Defaults to 2048.
             step_size (int): Shift step for slicing. Defaults to 512.
@@ -64,12 +64,16 @@ class FewShotSampler:
         self.valid_files = valid_files if valid_files is not None else list(range(self.total_files))
         
         # Calculate dynamic window boundaries based on input dimensionality
-        if self.X.ndim == 5:
+        if self.X.ndim >= 5:
             # 5D Layout already pre-windowed: [Folds, Files, Channels, Windows, Length]
             self.windows_per_file = self.X.shape[3]
-        else:
+        elif self.X.ndim == 4:
             # 4D Layout requiring mathematical step calculations: [Folds, Files, Channels, Signal_Length]
             self.windows_per_file = ((self.X.shape[-1] - self.window_size) // self.step_size) + 1
+        else:
+            raise ValueError("X dimensions must be greater than 3"
+                             "5D Layout: (Folds, Files, Channels, Windows, Length)"
+                             "4D Layout: (Folds, Files, Channels, Signal_Length)")
         
         # Parse active database nodes and extract computational capacities
         self.file_indices_by_class = self._map_files_to_classes()
@@ -193,27 +197,36 @@ class FewShotSampler:
             fold, actual_file, win_idx = self._translate_flat_to_coordinates(flat_idx, available_files)
             
             # Retrieve segment slices safely based on input tensor dimensionality
-            if self.X.ndim == 5:
-                # Direct indexing for pre-windowed 5-D layouts: [Folds, Files, Channels, Windows, Length]
-                x_slice = self.X[fold, actual_file, :, win_idx, :]
-            else:
-                # Dynamic sliding window slicing for standard 4-D tensors
-                start_pos = win_idx * self.step_size
-                end_pos = start_pos + self.window_size
-                x_slice = self.X[fold, actual_file, :, start_pos:end_pos]
+            x_slice = self._extract_sample(fold=fold, actual_file=actual_file, win_idx=win_idx)
                 
             # Append signal slice and numeric target label
             sampled_x.append(x_slice)
             sampled_y.append(num_label)
-            
-            # 🚀 FIX: Map and extract metadata safely using 'actual_file'
+
             # If metadata arrays are absent (None), append None to maintain equal list lengths
             sampled_sev.append(self.Severity[actual_file] if self.Severity is not None else None)
             sampled_rpm.append(self.RPM[actual_file] if self.RPM is not None else None)
 
         return sampled_x, sampled_y, sampled_sev, sampled_rpm
 
-    def _post_process_and_shuffle(self, s_x: list, s_y: list, s_sev: list, s_rpm: list) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    def _extract_sample(self, fold: int, actual_file: int, win_idx: int) -> np.ndarray:
+
+        # Retrieve segment slices safely based on input tensor dimensionality
+        if self.X.ndim >= 5:
+            # Direct indexing for pre-windowed 5-D layouts: [Folds, Files, Channels, Windows, ...]
+            return self.X[fold, actual_file, :, win_idx]
+
+        elif self.X.ndim == 4:
+            # Dynamic sliding window slicing for standard 4-D tensors: [Folds, Files, Channels, Signal Length]
+            start_pos = win_idx * self.step_size
+            return self.X[fold, actual_file, :, start_pos:start_pos + self.window_size]
+
+        else:
+            raise ValueError(f"Unsupported X dimension: {self.X.ndim}D. Expected 4D or 5D.")
+
+    def _post_process_and_shuffle(self, s_x: list, s_y: list,
+                                  s_sev: list = None, s_rpm: list = None
+                                  ) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Consolidates collected data batches, executes shuffling, and formats outputs.
 
         Args:
@@ -225,7 +238,20 @@ class FewShotSampler:
         Returns:
             Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]: Contiguous shuffled tensors.
         """
-        # 🚀 FIX: Zipping with guaranteed equal length lists (none of the lists are empty anymore)
+        if len(s_x) == 0:
+            if self.X.ndim >= 5:
+                # [Folds, Files, Channels, Windows, ...]
+                sample_shape = self.X.shape[2:]
+            else:
+                # [Folds, Files, Channels, Sensor Signal]
+                sample_shape = (self.X.shape[2], self.window_size)
+                
+            return np.empty((0, *sample_shape), dtype=self.X.dtype), np.empty((0,), dtype=np.int64), (None, None)
+
+        if s_sev is None: s_sev = [None] * len(s_x)
+        if s_rpm is None: s_rpm = [None] * len(s_x)
+
+        # 🚀 FIX: Zipping with guaranteed equal length lists
         combined = list(zip(s_x, s_y, s_sev, s_rpm))
         
         # Shuffle the tuple elements in-place to mix classes across the batch
@@ -242,12 +268,15 @@ class FewShotSampler:
         return X_final, Y_final, (Sev_final, RPM_final)
 
     def sample(self, target_numeric_classes: Tuple[int, ...], 
-               samples_per_class: Tuple[int, ...]) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+               samples_per_class: Tuple[int, ...],
+               query_samples_per_class: Optional[Tuple[int, ...]] = None
+               ) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Generates an N-Way K-Shot task/episode for meta-learning.
 
         Args:
             target_numeric_classes (Tuple[int, ...]): Tuple of class IDs to include (e.g., (0, 1) for 2-Way).
             samples_per_class (Tuple[int, ...]): Shots per class (e.g., (5, 5) for 5-Shot).
+            query_samples_per_class (Tuple[int, ...]): Shots per class for query set (e.g., (5, 5) for 5-Shot).
 
         Returns:
             X_final: High-performance 3D signal tensor [Samples, Channels, WindowSize]
@@ -255,7 +284,39 @@ class FewShotSampler:
             Meta_final: Aligned metadata tuple containing (Severity, RPM) trackers
         """
         # Ensure split capacities and targets are mathematically valid
-        self._validate_inputs(target_numeric_classes, samples_per_class)
+        if query_samples_per_class is None:
+            needed_samples = samples_per_class
+        else:
+            needed_samples = tuple(s + q for s, q in zip(samples_per_class, query_samples_per_class))
+
+        self._validate_inputs(target_numeric_classes, needed_samples)
+
+        if query_samples_per_class is not None:
+            all_s_x, all_s_y, all_q_x, all_q_y = [], [], [], []
+
+            for num_label, s_count, q_count in zip(target_numeric_classes, samples_per_class, query_samples_per_class):
+                string_name = self.numeric_to_string[num_label]
+                available_files = self.file_indices_by_class[string_name]
+
+                total_needed = s_count + q_count
+                chosen_flat = random.sample(range(self.label_frequencies[string_name]), total_needed)
+
+                s_indices = chosen_flat[:s_count]
+                q_indices = chosen_flat[s_count:total_needed]
+
+                for flat_idx in s_indices:
+                    f, file_idx, w = self._translate_flat_to_coordinates(flat_idx, available_files)
+                    all_s_x.append(self._extract_sample(f, file_idx, w))
+                    all_s_y.append(num_label)
+
+                for flat_idx in q_indices:
+                    f, file_idx, w = self._translate_flat_to_coordinates(flat_idx, available_files)
+                    all_q_x.append(self._extract_sample(f, file_idx, w))
+                    all_q_y.append(num_label)
+
+            x_s, y_s, _ = self._post_process_and_shuffle(all_s_x, all_s_y)
+            x_q, y_q, _ = self._post_process_and_shuffle(all_q_x, all_q_y)
+            return x_s, y_s, x_q, y_q
 
         all_sampled_x, all_sampled_y, all_sampled_sev, all_sampled_rpm = [], [], [], []
 
