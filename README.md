@@ -226,6 +226,7 @@ my_class_map = {0: 'normal', 1: 'imbalance', 2: 'misalignment'}
 # Request 50 samples for class 0, and only 5 samples for class 2 (Imbalanced Task)
 target_ids = (0, 2)
 task_counts = (50, 5)
+task_counts_query = (50, 15)
 
 # Initialize the episodic sampler framework by injecting numeric maps and constraints
 sampler = mafaulda.sample_few_shot_tasks(
@@ -239,6 +240,12 @@ sampler = mafaulda.sample_few_shot_tasks(
 X_task, Y_task, _ = sampler.sample(
     target_numeric_classes=target_ids, 
     samples_per_class=task_counts,
+)
+
+X_task, Y_task, X_q, Y_q = sampler.sample(
+    target_numeric_classes=target_ids, 
+    samples_per_class=task_counts,
+    query_samples_per_class=task_counts_query
 )
 ```
 
